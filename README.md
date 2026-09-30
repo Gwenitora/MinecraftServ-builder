@@ -139,21 +139,52 @@ partagent en grande partie `server.properties`/`bukkit.yml`) :
 ```
 docker/<loader>/Dockerfile        # une image par loader, tout est installé dans /app (via /opt/server-src)
 entrypoint/entrypoint.sh          # entrypoint commun: init /app si vide, accepte l'EULA, lance run.sh
-scripts/resolve_versions.py       # interroge les API officielles de chaque loader, calcule les tags
-.github/actions/resolve-versions/ # action composite: calcule la matrix de build pour un loader
-.github/actions/build-push/       # action composite: build + push une image (1 entrée de la matrix)
-.github/workflows/<loader>.yml    # déclenchement quotidien (cron) par loader, utilise les 2 actions ci-dessus
+scripts/resolve_versions.py       # interroge les API officielles de chaque loader, calcule les tags, trie par ordre chronologique
+.github/actions/resolve-versions/ # action composite: calcule la matrix de build (triée chronologiquement) pour un loader
+.github/actions/build-loader/     # action composite: build + push TOUTES les versions de la matrix, une par une, dans l'ordre, arrêt au 1er échec
+.github/actions/reset-images/     # action composite: supprime tous les tags Docker Hub existants d'un loader (option "reset")
+.github/workflows/<loader>.yml    # déclenchement quotidien (cron) par loader, job unique séquentiel utilisant les actions ci-dessus
 .github/workflows/run-selected-builds.yml  # déclenche manuellement un ou plusieurs workflows <loader>.yml
 ```
+
+### Ordre de build et arrêt au premier échec
+
+Chaque workflow `<loader>.yml` construit **une seule image à la fois**, dans
+l'**ordre chronologique de sortie** des versions (de la plus ancienne à la
+plus récente), plutôt qu'en parallèle. Ceci est nécessaire pour que les tags
+"mouvants" par profondeur (`1.21-latest`, `1.21-snapshot`, etc.) soient
+toujours calculés/poussés dans le bon ordre les uns par rapport aux autres.
+
+Si le build d'une version échoue (erreur Docker, téléchargement du jar,
+etc.), le job **s'arrête immédiatement** : les versions plus récentes ne
+sont **pas** construites lors de ce run (elles le seront au prochain
+déclenchement, une fois le problème résolu). Le résumé du run (onglet
+*Summary* du job GitHub Actions) indique à quelle version l'arrêt a eu lieu
+et combien de versions ont été construites avec succès avant.
+
+### Option « reset » : repartir de zéro
+
+Chaque workflow `<loader>.yml` (et le dispatcher `run-selected-builds.yml`)
+propose une case à cocher **`reset`** dans le formulaire `workflow_dispatch`.
+Si elle est cochée, **avant** de calculer la matrix et de lancer les builds,
+l'action `reset-images` supprime **tous** les tags déjà présents sur
+`minecraftserv/<loader>` (le token Docker Hub doit avoir les droits de
+suppression). Cela permet de repartir d'un dépôt Docker Hub vide et de
+relancer un backfill complet pendant les phases de test, sans avoir à
+nettoyer manuellement Docker Hub. À utiliser avec précaution : l'opération
+est irréversible.
 
 ### Lancer soi-même un ou plusieurs builds
 
 Onglet **Actions** → workflow **run-selected-builds** → **Run workflow**.
 Coche les loaders à reconstruire (ou la case **all** pour tous les
-sélectionner), choisis le `mode` (`daily`/`backfill`) et lance. Ce workflow
-déclenche à sa place chaque `<loader>.yml` correspondant via l'API GitHub
-Actions (`gh workflow run`), donc chaque loader sélectionné tourne comme un
-run indépendant (visible séparément dans l'onglet Actions).
+sélectionner), choisis le `mode` (`daily`/`backfill`), coche `reset` si tu
+veux d'abord supprimer tous les tags Docker Hub existants pour ces loaders,
+et lance. Ce workflow déclenche à sa place chaque `<loader>.yml`
+correspondant via l'API GitHub Actions (`gh workflow run`), donc chaque
+loader sélectionné tourne comme un run indépendant (visible séparément dans
+l'onglet Actions), et chacun construit ses versions une par une dans
+l'ordre chronologique (voir ci-dessous).
 
 ### Comment fonctionne la mise à jour quotidienne
 
@@ -165,8 +196,15 @@ Chaque jour, pour chaque loader :
    - les tags "mouvants" (`latest`, `snapshot`, `experimental`, et toutes
      les variantes `-latest`/`-snapshot`/`-experimental` par profondeur),
    - les versions jamais construites auparavant.
-3. Chaque job du matrix build l'image avec les bons `--build-arg` et la
-   pousse avec tous ses tags sur `minecraftserv/<loader>`.
+3. Chaque version est construite **séquentiellement** (pas en parallèle) et
+   poussée avec tous ses tags sur `minecraftserv/<loader>`, dans l'ordre
+   chronologique de sortie. Si une version échoue, le run s'arrête et les
+   versions plus récentes ne sont pas traitées ce jour-là.
+
+> ⚠️ Un run GitHub Actions est limité à ~6h d'exécution (`timeout-minutes:
+> 350` dans chaque workflow). Un backfill complet de plusieurs centaines de
+> versions peut donc nécessiter plusieurs runs successifs (voir `--limit`/
+> `--offset` ci-dessous) : c'est normal et prévu.
 
 Étant donné le nombre très important de versions historiques (plusieurs
 centaines, notamment pour Forge/Fabric), la reconstruction exhaustive de
@@ -187,7 +225,9 @@ versions et les tags mouvants).
 
 1. Connectez-vous sur https://hub.docker.com avec le compte `minecraftserv`.
 2. Allez dans **Account Settings → Security → Access Tokens** et créez un
-   token (permissions Read/Write), puis copiez-le (il ne sera plus affiché).
+   token avec permissions **Read, Write, Delete** (le *Delete* est
+   nécessaire pour l'option `reset`, qui supprime des tags), puis copiez-le
+   (il ne sera plus affiché).
 3. Dans ce dépôt GitHub : **Settings → Secrets and variables → Actions →
    New repository secret**, ajoutez :
    - `DOCKERHUB_USERNAME` = `minecraftserv`

@@ -10,11 +10,16 @@ on:
         options: [daily, backfill]
         default: daily
       limit:
+        description: "0 = pas de limite (attention au temps CI sur un gros volume)"
         type: number
         default: 0
       offset:
         type: number
         default: 0
+      reset:
+        description: "Supprimer d'abord TOUS les tags déjà publiés sur Docker Hub (repart de zéro)"
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
@@ -22,18 +27,29 @@ on:
       - entrypoint/**
       - scripts/resolve_versions.py
       - .github/actions/resolve-versions/**
-      - .github/actions/build-push/**
+      - .github/actions/build-loader/**
+      - .github/actions/reset-images/**
       - .github/workflows/vanilla.yml
 
 jobs:
-  resolve:
+  build:
     runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.resolve.outputs.matrix }}
-      count: ${{ steps.resolve.outputs.count }}
+    # Les runners GitHub-hosted ont une limite dure de 6h : au-delà, découpez
+    # un backfill complet en plusieurs runs avec --limit/--offset.
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
-      - id: resolve
+
+      - name: Reset (supprime tous les tags existants)
+        if: inputs.reset == true
+        uses: ./.github/actions/reset-images
+        with:
+          loader: vanilla
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Résoudre les versions à construire
+        id: resolve
         uses: ./.github/actions/resolve-versions
         with:
           loader: vanilla
@@ -41,23 +57,11 @@ jobs:
           limit: ${{ inputs.limit || 0 }}
           offset: ${{ inputs.offset || 0 }}
 
-  build:
-    needs: resolve
-    if: needs.resolve.outputs.count != '0'
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      max-parallel: 6
-      matrix: ${{ fromJson(needs.resolve.outputs.matrix) }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/build-push
+      - name: Construire et pousser les images (une par une, ordre chronologique)
+        if: steps.resolve.outputs.count != '0'
+        uses: ./.github/actions/build-loader
         with:
           loader: vanilla
-          mc_version: ${{ matrix.mc_version }}
-          loader_version: ${{ matrix.loader_version }}
-          java: ${{ matrix.java }}
-          tags_json: ${{ toJson(matrix.tags) }}
-          build_args_json: ${{ toJson(matrix.build_args) }}
+          matrix_json: ${{ steps.resolve.outputs.matrix }}
           dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
           dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}

@@ -1,0 +1,57 @@
+name: Reset des images Docker Hub d'un loader
+description: >
+  Supprime TOUS les tags déjà publiés sur minecraftserv/<loader> (repository
+  Docker Hub conservé, seuls les tags sont effacés). Utile en phase de test
+  pour repartir de zéro. Nécessite un Access Token Docker Hub avec droits
+  d'écriture/suppression.
+
+inputs:
+  loader:
+    required: true
+  dockerhub_username:
+    required: true
+  dockerhub_token:
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Supprimer tous les tags existants
+      shell: bash
+      env:
+        LOADER: ${{ inputs.loader }}
+        DH_USER: ${{ inputs.dockerhub_username }}
+        DH_TOKEN: ${{ inputs.dockerhub_token }}
+      run: |
+        set -euo pipefail
+        echo "== Authentification Docker Hub API =="
+        JWT=$(curl -fsSL -X POST "https://hub.docker.com/v2/users/login/" \
+          -H "Content-Type: application/json" \
+          -d "{\"username\": \"${DH_USER}\", \"password\": \"${DH_TOKEN}\"}" | jq -r '.token')
+
+        if [ -z "$JWT" ] || [ "$JWT" = "null" ]; then
+          echo "::error::Impossible de s'authentifier auprès de l'API Docker Hub avec le token fourni."
+          exit 1
+        fi
+
+        echo "== Suppression de tous les tags de minecraftserv/${LOADER} =="
+        page=1
+        deleted=0
+        while :; do
+          resp=$(curl -fsSL -H "Authorization: Bearer ${JWT}" \
+            "https://hub.docker.com/v2/repositories/minecraftserv/${LOADER}/tags?page_size=100&page=${page}" || echo '{}')
+          names=$(echo "$resp" | jq -r '.results[]?.name' || true)
+          [ -z "$names" ] && break
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            echo "  - suppression du tag: $tag"
+            curl -fsSL -X DELETE -H "Authorization: Bearer ${JWT}" \
+              "https://hub.docker.com/v2/repositories/minecraftserv/${LOADER}/tags/${tag}/" >/dev/null || true
+            deleted=$((deleted + 1))
+          done <<< "$names"
+          next=$(echo "$resp" | jq -r '.next // empty')
+          [ -z "$next" ] && break
+          page=$((page + 1))
+        done
+        echo "== $deleted tag(s) supprimé(s) pour ${LOADER} =="
+        echo "### 🗑️ Reset: $deleted tag(s) supprimé(s) sur minecraftserv/${LOADER}" >> "$GITHUB_STEP_SUMMARY"

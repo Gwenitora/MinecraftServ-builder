@@ -23,6 +23,7 @@ Modes:
 Séparateur version-loader dans les tags: "_" (ex: 1.21.2_40.1.80)
 """
 import argparse
+import datetime
 import json
 import re
 import sys
@@ -85,7 +86,7 @@ def java_for_mc(mc_version):
         return "21"
     major = nums[0]
     minor = nums[1] if len(nums) > 1 else 0
-    # nouveau schéma calendaire (>= 26.x) -> Java 21
+    # nouveau schéma calendaire (>= 20.x hors "1.x") -> Java 21
     if major >= 20 and major != 1:
         return "21"
     if major == 1:
@@ -99,6 +100,33 @@ def java_for_mc(mc_version):
             return "11"
         return "8"
     return "21"
+
+
+def version_sort_key(v):
+    """Clé de tri approximative basée sur les nombres présents dans la
+    chaîne de version (ex: '1.21.2' -> (1, 21, 2, 0, 0, 0)). Sert de repli
+    quand aucune date de publication réelle n'est disponible."""
+    nums = [int(x) for x in re.findall(r"\d+", v)]
+    nums = (nums + [0] * 6)[:6]
+    return tuple(nums)
+
+
+def entry_sort_key(e):
+    """Clé de tri chronologique d'une entrée (mc_version). Utilise la date
+    de sortie réelle quand elle est connue (vanilla, via Mojang), sinon
+    l'ordre naturel des numéros de version."""
+    rt = e.get("release_time")
+    ts = 0.0
+    if rt:
+        try:
+            ts = datetime.datetime.fromisoformat(rt.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            ts = 0.0
+    return (ts, version_sort_key(e["mc_version"]))
+
+
+def job_sort_key(e, loader_id):
+    return entry_sort_key(e) + (version_sort_key(loader_id),)
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +143,7 @@ def provider_vanilla():
             "mc_version": v["id"],
             "mc_channel": ch,
             "java": java_for_mc(v["id"]),
+            "release_time": v.get("releaseTime"),
             "loaders": [{
                 "id": v["id"],
                 "channel": ch,
@@ -285,23 +314,24 @@ def pick_loader_strict(loaders, channel):
 
 
 def build_jobs(loader_name, entries, mode, known_tags):
-    """entries: sortie d'un provider. Retourne une liste de jobs matrix."""
+    """entries: sortie d'un provider. Retourne une liste de jobs matrix,
+    triée par ordre chronologique d'apparition (plus ancien -> plus récent)."""
     # index par mc_version pour calculer les tags de profondeur "-snapshot"/"-experimental"
     by_channel = {"latest": [], "snapshot": [], "experimental": []}
     for e in entries:
         by_channel[e["mc_channel"]].append(e)
     for v in by_channel.values():
-        v.sort(key=lambda e: e["mc_version"], reverse=True)
+        v.sort(key=entry_sort_key, reverse=True)
 
     # dernière version release connue par profondeur, pour rattacher les
     # tags -snapshot/-experimental d'une profondeur donnée à la même branche
     jobs = {}
 
-    def add_job(mc_version, loader_id, java, tags, build_args):
+    def add_job(mc_version, loader_id, java, tags, build_args, sort_key):
         key = (mc_version, loader_id)
         j = jobs.setdefault(key, {
             "loader": loader_name, "mc_version": mc_version, "loader_version": loader_id,
-            "java": java, "build_args": build_args, "tags": set(),
+            "java": java, "build_args": build_args, "tags": set(), "_sort_key": sort_key,
         })
         j["tags"].update(tags)
 
@@ -324,50 +354,50 @@ def build_jobs(loader_name, entries, mode, known_tags):
             tags.add(d)
             tags.add(f"{d}-latest")
 
-        add_job(mc, default_loader["id"], e["java"], tags, default_loader["build_args"])
+        add_job(mc, default_loader["id"], e["java"], tags, default_loader["build_args"], job_sort_key(e, default_loader["id"]))
 
         # --- mots-clés de canal côté loader: "<mc>_latest" (alias du tag nu)
         # et "<mc>_experimental" quand un build expérimental du loader existe
         # réellement pour cette version de Minecraft.
-        add_job(mc, default_loader["id"], e["java"], {f"{mc}{SEP}latest"}, default_loader["build_args"])
+        add_job(mc, default_loader["id"], e["java"], {f"{mc}{SEP}latest"}, default_loader["build_args"], job_sort_key(e, default_loader["id"]))
         exp_keyword_loader = pick_loader_strict(loaders, "experimental")
         if exp_keyword_loader:
-            add_job(mc, exp_keyword_loader["id"], e["java"], {f"{mc}{SEP}experimental"}, exp_keyword_loader["build_args"])
+            add_job(mc, exp_keyword_loader["id"], e["java"], {f"{mc}{SEP}experimental"}, exp_keyword_loader["build_args"], job_sort_key(e, exp_keyword_loader["id"]))
 
         # --- variantes explicites de version de loader: mc_loader
         if mode == "backfill":
             for l in loaders:
                 if l is default_loader:
                     continue
-                add_job(mc, l["id"], e["java"], {f"{mc}{SEP}{l['id']}"}, l["build_args"])
+                add_job(mc, l["id"], e["java"], {f"{mc}{SEP}{l['id']}"}, l["build_args"], job_sort_key(e, l["id"]))
         # en mode daily on limite aux loaders "latest"/"experimental" les plus récents
         elif mode == "daily":
             exp_loader = pick_default_loader(loaders, "experimental")
             if exp_loader and exp_loader is not default_loader:
-                add_job(mc, exp_loader["id"], e["java"], {f"{mc}{SEP}{exp_loader['id']}"}, exp_loader["build_args"])
+                add_job(mc, exp_loader["id"], e["java"], {f"{mc}{SEP}{exp_loader['id']}"}, exp_loader["build_args"], job_sort_key(e, exp_loader["id"]))
 
     # --- tags globaux mouvants: latest / snapshot / experimental
     if global_latest_mc:
         e = global_latest_mc
         dl = pick_default_loader(e["loaders"], "latest")
         if dl:
-            add_job(e["mc_version"], dl["id"], e["java"], {"latest", f"latest{SEP}latest"}, dl["build_args"])
+            add_job(e["mc_version"], dl["id"], e["java"], {"latest", f"latest{SEP}latest"}, dl["build_args"], job_sort_key(e, dl["id"]))
         exp = pick_loader_strict(e["loaders"], "experimental")
         if exp:
-            add_job(e["mc_version"], exp["id"], e["java"], {f"latest{SEP}experimental"}, exp["build_args"])
+            add_job(e["mc_version"], exp["id"], e["java"], {f"latest{SEP}experimental"}, exp["build_args"], job_sort_key(e, exp["id"]))
     if global_snapshot_mc:
         e = global_snapshot_mc
         dl = pick_default_loader(e["loaders"], "latest")
         if dl:
-            add_job(e["mc_version"], dl["id"], e["java"], {"snapshot", f"snapshot{SEP}latest"}, dl["build_args"])
+            add_job(e["mc_version"], dl["id"], e["java"], {"snapshot", f"snapshot{SEP}latest"}, dl["build_args"], job_sort_key(e, dl["id"]))
         exp = pick_loader_strict(e["loaders"], "experimental")
         if exp:
-            add_job(e["mc_version"], exp["id"], e["java"], {f"snapshot{SEP}experimental"}, exp["build_args"])
+            add_job(e["mc_version"], exp["id"], e["java"], {f"snapshot{SEP}experimental"}, exp["build_args"], job_sort_key(e, exp["id"]))
     if global_experimental_mc:
         e = global_experimental_mc
         dl = pick_default_loader(e["loaders"], "latest")
         if dl:
-            add_job(e["mc_version"], dl["id"], e["java"], {"experimental", f"experimental{SEP}latest"}, dl["build_args"])
+            add_job(e["mc_version"], dl["id"], e["java"], {"experimental", f"experimental{SEP}latest"}, dl["build_args"], job_sort_key(e, dl["id"]))
 
     # --- tags de profondeur -snapshot / -experimental: on rattache la
     # dernière version snapshot/experimental connue à chaque profondeur de la
@@ -378,12 +408,12 @@ def build_jobs(loader_name, entries, mode, known_tags):
             dl = pick_default_loader(global_snapshot_mc["loaders"], "latest")
             if dl:
                 add_job(global_snapshot_mc["mc_version"], dl["id"], global_snapshot_mc["java"],
-                        {f"{d}-snapshot" for d in depths}, dl["build_args"])
+                        {f"{d}-snapshot" for d in depths}, dl["build_args"], job_sort_key(global_snapshot_mc, dl["id"]))
         if global_experimental_mc:
             dl = pick_default_loader(global_experimental_mc["loaders"], "latest")
             if dl:
                 add_job(global_experimental_mc["mc_version"], dl["id"], global_experimental_mc["java"],
-                        {f"{d}-experimental" for d in depths}, dl["build_args"])
+                        {f"{d}-experimental" for d in depths}, dl["build_args"], job_sort_key(global_experimental_mc, dl["id"]))
 
     result = list(jobs.values())
 
@@ -404,7 +434,11 @@ def build_jobs(loader_name, entries, mode, known_tags):
                 filtered.append(j)
         result = filtered
 
+    # ordre chronologique d'apparition (plus ancien -> plus récent) : essentiel
+    # pour un build séquentiel où un échec doit arrêter les versions suivantes.
+    result.sort(key=lambda j: j["_sort_key"])
     for j in result:
+        j.pop("_sort_key", None)
         j["tags"] = sorted(j["tags"])
     return result
 
@@ -428,7 +462,6 @@ def main():
 
     entries = PROVIDERS[args.loader]()
     jobs = build_jobs(args.loader, entries, args.mode, known_tags)
-    jobs.sort(key=lambda j: (j["mc_version"], j["loader_version"]))
 
     if args.limit is not None:
         jobs = jobs[args.offset:args.offset + args.limit]

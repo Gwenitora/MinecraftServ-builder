@@ -1,0 +1,87 @@
+name: Build & push loader images sequentially
+description: >
+  Construit et pousse, une par une et dans l'ordre chronologique, toutes les
+  images d'un loader décrites par la matrix JSON fournie (sortie de l'action
+  resolve-versions). S'arrête immédiatement (sans traiter les versions
+  suivantes) si une version échoue à builder ou à se pousser.
+
+inputs:
+  loader:
+    description: "vanilla | bukkit | spigot | paper | forge | neoforge | fabric | quilt"
+    required: true
+  matrix_json:
+    description: 'Matrix JSON au format {"include": [...]} (sortie de resolve-versions)'
+    required: true
+  dockerhub_username:
+    required: true
+  dockerhub_token:
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Connexion à Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ inputs.dockerhub_username }}
+        password: ${{ inputs.dockerhub_token }}
+
+    - name: Build & push séquentiel (ordre chronologique, arrêt au premier échec)
+      shell: bash
+      env:
+        LOADER: ${{ inputs.loader }}
+        MATRIX_JSON: ${{ inputs.matrix_json }}
+      run: |
+        set -euo pipefail
+        echo "$MATRIX_JSON" | jq -c '.include[]' > /tmp/jobs.ndjson
+        TOTAL=$(wc -l < /tmp/jobs.ndjson)
+        echo "== $TOTAL version(s) à construire pour $LOADER (ordre chronologique) =="
+
+        i=0
+        while IFS= read -r job; do
+          i=$((i + 1))
+          mc_version=$(echo "$job" | jq -r '.mc_version')
+          loader_version=$(echo "$job" | jq -r '.loader_version')
+          java=$(echo "$job" | jq -r '.java')
+
+          case "$java" in
+            8) java_build=eclipse-temurin:8-jdk-jammy; java_runtime=eclipse-temurin:8-jre-jammy ;;
+            11) java_build=eclipse-temurin:11-jdk-jammy; java_runtime=eclipse-temurin:11-jre-jammy ;;
+            17) java_build=eclipse-temurin:17-jdk-jammy; java_runtime=eclipse-temurin:17-jre-jammy ;;
+            *) java_build=eclipse-temurin:21-jdk-jammy; java_runtime=eclipse-temurin:21-jre-jammy ;;
+          esac
+
+          tag_args=()
+          while IFS= read -r t; do
+            tag_args+=(-t "minecraftserv/${LOADER}:${t}")
+          done < <(echo "$job" | jq -r '.tags[]')
+
+          build_arg_args=(--build-arg "JAVA_IMAGE=${java_build}" --build-arg "JAVA_RUNTIME_IMAGE=${java_runtime}" --build-arg "MC_VERSION=${mc_version}" --build-arg "LOADER_VERSION=${loader_version}")
+          while IFS= read -r kv; do
+            build_arg_args+=(--build-arg "$kv")
+          done < <(echo "$job" | jq -r '.build_args // {} | to_entries[] | "\(.key)=\(.value)"')
+
+          tags_display=$(echo "$job" | jq -r '.tags | join(", ")')
+          echo ""
+          echo "[$i/$TOTAL] ${LOADER} ${mc_version} (loader ${loader_version}) -> ${tags_display}"
+
+          if ! docker buildx build \
+              --platform linux/amd64,linux/arm64 \
+              -f "docker/${LOADER}/Dockerfile" \
+              "${tag_args[@]}" \
+              "${build_arg_args[@]}" \
+              --push \
+              .; then
+            echo "::error::Échec du build de ${LOADER} ${mc_version} (loader ${loader_version}). Arrêt : les versions suivantes ne seront pas construites."
+            echo "### ❌ Arrêt sur ${mc_version} (loader ${loader_version}) — $((i - 1))/${TOTAL} version(s) construite(s) avec succès avant l'échec." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+        done < /tmp/jobs.ndjson
+
+        echo "### ✅ ${TOTAL} version(s) construite(s) avec succès pour ${LOADER}." >> "$GITHUB_STEP_SUMMARY"

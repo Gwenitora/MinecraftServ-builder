@@ -48,6 +48,10 @@ on:
         description: "Décalage de pagination (mode backfill)"
         type: number
         default: 0
+      reset:
+        description: "Supprimer d'abord TOUS les tags Docker Hub existants pour chaque loader sélectionné (repart de zéro)"
+        type: boolean
+        default: false
 
 permissions:
   actions: write
@@ -85,7 +89,8 @@ jobs:
                 --ref "${{ github.ref_name }}" \
                 -f mode="${{ inputs.mode }}" \
                 -f limit="${{ inputs.limit }}" \
-                -f offset="${{ inputs.offset }}"
+                -f offset="${{ inputs.offset }}" \
+                -f reset="${{ inputs.reset }}"
               TRIGGERED="$TRIGGERED $loader"
             fi
           done
