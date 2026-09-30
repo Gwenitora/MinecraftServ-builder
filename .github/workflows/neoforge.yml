@@ -1,0 +1,35 @@
+name: neoforge
+
+on:
+  schedule:
+    - cron: "0 15 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [daily, backfill]
+        default: daily
+      limit:
+        type: number
+        default: 0
+      offset:
+        type: number
+        default: 0
+  push:
+    branches: [main]
+    paths:
+      - docker/neoforge/**
+      - entrypoint/**
+      - scripts/resolve_versions.py
+      - .github/workflows/neoforge.yml
+      - .github/workflows/_reusable-build.yml
+
+jobs:
+  build:
+    uses: ./.github/workflows/_reusable-build.yml
+    with:
+      loader: neoforge
+      mode: ${{ inputs.mode || 'daily' }}
+      limit: ${{ inputs.limit || 0 }}
+      offset: ${{ inputs.offset || 0 }}
+    secrets: inherit
