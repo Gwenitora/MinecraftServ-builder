@@ -144,7 +144,7 @@ scripts/resolve_versions.py       # interroge les API officielles de chaque load
 .github/actions/build-loader/     # action composite: build + push TOUTES les versions de la matrix, une par une, dans l'ordre, arrêt au 1er échec
 .github/actions/reset-images/     # action composite: supprime tous les tags Docker Hub existants d'un loader (option "reset")
 .github/workflows/<loader>.yml    # déclenchement quotidien (cron) par loader, job unique séquentiel utilisant les actions ci-dessus
-.github/workflows/run-selected-builds.yml  # déclenche manuellement un ou plusieurs workflows <loader>.yml
+.github/workflows/builds.yml       # déclenche manuellement un ou plusieurs workflows <loader>.yml
 ```
 
 ### Ordre de build et arrêt au premier échec
@@ -164,7 +164,7 @@ et combien de versions ont été construites avec succès avant.
 
 ### Option « reset » : repartir de zéro
 
-Chaque workflow `<loader>.yml` (et le dispatcher `run-selected-builds.yml`)
+Chaque workflow `<loader>.yml` (et le dispatcher `builds.yml`)
 propose une case à cocher **`reset`** dans le formulaire `workflow_dispatch`.
 Si elle est cochée, **avant** de calculer la matrix et de lancer les builds,
 l'action `reset-images` supprime **tous** les tags déjà présents sur
@@ -176,7 +176,7 @@ est irréversible.
 
 ### Lancer soi-même un ou plusieurs builds
 
-Onglet **Actions** → workflow **run-selected-builds** → **Run workflow**.
+Onglet **Actions** → workflow **builds** → **Run workflow**.
 Coche les loaders à reconstruire (ou la case **all** pour tous les
 sélectionner), choisis le `mode` (`daily`/`backfill`), coche `reset` si tu
 veux d'abord supprimer tous les tags Docker Hub existants pour ces loaders,

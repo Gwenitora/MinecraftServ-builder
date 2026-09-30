@@ -86,6 +86,7 @@ jobs:
             if [ "$selected" = "true" ]; then
               echo "→ Déclenchement de ${loader}.yml (mode=${{ inputs.mode }})"
               gh workflow run "${loader}.yml" \
+                --repo "${{ github.repository }}" \
                 --ref "${{ github.ref_name }}" \
                 -f mode="${{ inputs.mode }}" \
                 -f limit="${{ inputs.limit }}" \
