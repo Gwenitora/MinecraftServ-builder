@@ -21,15 +21,43 @@ on:
       - docker/fabric/**
       - entrypoint/**
       - scripts/resolve_versions.py
+      - .github/actions/resolve-versions/**
+      - .github/actions/build-push/**
       - .github/workflows/fabric.yml
-      - .github/workflows/_reusable-build.yml
 
 jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+      count: ${{ steps.resolve.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: resolve
+        uses: ./.github/actions/resolve-versions
+        with:
+          loader: fabric
+          mode: ${{ inputs.mode || 'daily' }}
+          limit: ${{ inputs.limit || 0 }}
+          offset: ${{ inputs.offset || 0 }}
+
   build:
-    uses: ./.github/workflows/_reusable-build.yml
-    with:
-      loader: fabric
-      mode: ${{ inputs.mode || 'daily' }}
-      limit: ${{ inputs.limit || 0 }}
-      offset: ${{ inputs.offset || 0 }}
-    secrets: inherit
+    needs: resolve
+    if: needs.resolve.outputs.count != '0'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix: ${{ fromJson(needs.resolve.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/build-push
+        with:
+          loader: fabric
+          mc_version: ${{ matrix.mc_version }}
+          loader_version: ${{ matrix.loader_version }}
+          java: ${{ matrix.java }}
+          tags_json: ${{ toJson(matrix.tags) }}
+          build_args_json: ${{ toJson(matrix.build_args) }}
+          dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}

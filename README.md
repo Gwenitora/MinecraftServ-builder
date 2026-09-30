@@ -137,12 +137,23 @@ partagent en grande partie `server.properties`/`bukkit.yml`) :
 ## Architecture du projet / CI
 
 ```
-docker/<loader>/Dockerfile   # une image par loader, tout est installé dans /app (via /opt/server-src)
-entrypoint/entrypoint.sh     # entrypoint commun: init /app si vide, accepte l'EULA, lance run.sh
-scripts/resolve_versions.py  # interroge les API officielles de chaque loader, calcule les tags
-.github/workflows/_reusable-build.yml  # build+push réutilisable (matrix dynamique)
-.github/workflows/<loader>.yml         # déclenchement quotidien (cron) par loader
+docker/<loader>/Dockerfile        # une image par loader, tout est installé dans /app (via /opt/server-src)
+entrypoint/entrypoint.sh          # entrypoint commun: init /app si vide, accepte l'EULA, lance run.sh
+scripts/resolve_versions.py       # interroge les API officielles de chaque loader, calcule les tags
+.github/actions/resolve-versions/ # action composite: calcule la matrix de build pour un loader
+.github/actions/build-push/       # action composite: build + push une image (1 entrée de la matrix)
+.github/workflows/<loader>.yml    # déclenchement quotidien (cron) par loader, utilise les 2 actions ci-dessus
+.github/workflows/run-selected-builds.yml  # déclenche manuellement un ou plusieurs workflows <loader>.yml
 ```
+
+### Lancer soi-même un ou plusieurs builds
+
+Onglet **Actions** → workflow **run-selected-builds** → **Run workflow**.
+Coche les loaders à reconstruire (ou la case **all** pour tous les
+sélectionner), choisis le `mode` (`daily`/`backfill`) et lance. Ce workflow
+déclenche à sa place chaque `<loader>.yml` correspondant via l'API GitHub
+Actions (`gh workflow run`), donc chaque loader sélectionné tourne comme un
+run indépendant (visible séparément dans l'onglet Actions).
 
 ### Comment fonctionne la mise à jour quotidienne
 

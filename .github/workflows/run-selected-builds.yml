@@ -1,0 +1,96 @@
+name: run-selected-builds
+
+# Permet de déclencher manuellement, en un seul clic, un ou plusieurs
+# workflows de build de loader (vanilla/bukkit/spigot/paper/forge/neoforge/
+# fabric/quilt) sans avoir à ouvrir chaque workflow séparément.
+
+on:
+  workflow_dispatch:
+    inputs:
+      all:
+        description: "Tout sélectionner (ignore les cases individuelles ci-dessous)"
+        type: boolean
+        default: false
+      vanilla:
+        type: boolean
+        default: false
+      bukkit:
+        type: boolean
+        default: false
+      spigot:
+        type: boolean
+        default: false
+      paper:
+        type: boolean
+        default: false
+      forge:
+        type: boolean
+        default: false
+      neoforge:
+        type: boolean
+        default: false
+      fabric:
+        type: boolean
+        default: false
+      quilt:
+        type: boolean
+        default: false
+      mode:
+        description: "Mode transmis à chaque workflow déclenché"
+        type: choice
+        options: [daily, backfill]
+        default: daily
+      limit:
+        description: "Limite de jobs (pagination backfill), 0 = pas de limite"
+        type: number
+        default: 0
+      offset:
+        description: "Décalage de pagination (mode backfill)"
+        type: number
+        default: 0
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Déclencher les workflows sélectionnés
+        run: |
+          set -euo pipefail
+          LOADERS="vanilla bukkit spigot paper forge neoforge fabric quilt"
+          TRIGGERED=""
+          for loader in $LOADERS; do
+            selected=false
+            if [ "${{ inputs.all }}" = "true" ]; then
+              selected=true
+            fi
+            case "$loader" in
+              vanilla)  [ "${{ inputs.vanilla }}" = "true" ] && selected=true ;;
+              bukkit)   [ "${{ inputs.bukkit }}" = "true" ] && selected=true ;;
+              spigot)   [ "${{ inputs.spigot }}" = "true" ] && selected=true ;;
+              paper)    [ "${{ inputs.paper }}" = "true" ] && selected=true ;;
+              forge)    [ "${{ inputs.forge }}" = "true" ] && selected=true ;;
+              neoforge) [ "${{ inputs.neoforge }}" = "true" ] && selected=true ;;
+              fabric)   [ "${{ inputs.fabric }}" = "true" ] && selected=true ;;
+              quilt)    [ "${{ inputs.quilt }}" = "true" ] && selected=true ;;
+            esac
+            if [ "$selected" = "true" ]; then
+              echo "→ Déclenchement de ${loader}.yml (mode=${{ inputs.mode }})"
+              gh workflow run "${loader}.yml" \
+                --ref "${{ github.ref_name }}" \
+                -f mode="${{ inputs.mode }}" \
+                -f limit="${{ inputs.limit }}" \
+                -f offset="${{ inputs.offset }}"
+              TRIGGERED="$TRIGGERED $loader"
+            fi
+          done
+          if [ -z "$TRIGGERED" ]; then
+            echo "::warning::Aucun loader sélectionné (coche au moins une case, ou 'all')."
+          else
+            echo "### Workflows déclenchés :$TRIGGERED" >> "$GITHUB_STEP_SUMMARY"
+          fi

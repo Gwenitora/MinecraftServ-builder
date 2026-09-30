@@ -1,0 +1,65 @@
+name: Resolve Minecraft versions
+description: >
+  Interroge l'API officielle d'un loader (Mojang / PaperMC / Fabric / Quilt /
+  Forge / NeoForge / BuildTools) et calcule la matrix de build (versions +
+  tags Docker) via scripts/resolve_versions.py.
+
+inputs:
+  loader:
+    description: "vanilla | bukkit | spigot | paper | forge | neoforge | fabric | quilt"
+    required: true
+  mode:
+    description: "daily (versions nouvelles + tags mouvants) | backfill (historique complet)"
+    required: false
+    default: daily
+  limit:
+    description: "Limite le nombre de jobs renvoyés (pagination backfill), 0 = pas de limite"
+    required: false
+    default: "0"
+  offset:
+    description: "Décalage pour la pagination backfill"
+    required: false
+    default: "0"
+
+outputs:
+  matrix:
+    description: 'Matrix JSON au format {"include": [...]}'
+    value: ${{ steps.build-matrix.outputs.matrix }}
+  count:
+    description: "Nombre de jobs à construire"
+    value: ${{ steps.build-matrix.outputs.count }}
+
+runs:
+  using: composite
+  steps:
+    - name: Récupérer les tags déjà publiés sur Docker Hub
+      shell: bash
+      run: |
+        set -euo pipefail
+        : > known_tags.txt
+        page=1
+        while :; do
+          resp=$(curl -fsSL "https://hub.docker.com/v2/repositories/minecraftserv/${{ inputs.loader }}/tags?page_size=100&page=${page}" || echo '{}')
+          names=$(echo "$resp" | jq -r '.results[]?.name' || true)
+          [ -z "$names" ] && break
+          echo "$names" >> known_tags.txt
+          next=$(echo "$resp" | jq -r '.next // empty')
+          [ -z "$next" ] && break
+          page=$((page + 1))
+        done
+        echo "Tags déjà publiés: $(wc -l < known_tags.txt)"
+
+    - name: Résoudre les versions disponibles
+      id: build-matrix
+      shell: bash
+      run: |
+        set -euo pipefail
+        ARGS="--loader ${{ inputs.loader }} --mode ${{ inputs.mode }} --state-file known_tags.txt"
+        if [ "${{ inputs.limit }}" != "0" ]; then
+          ARGS="$ARGS --limit ${{ inputs.limit }} --offset ${{ inputs.offset }}"
+        fi
+        python3 scripts/resolve_versions.py $ARGS > matrix.json
+        COUNT=$(jq '.include | length' matrix.json)
+        echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+        echo "matrix=$(cat matrix.json)" >> "$GITHUB_OUTPUT"
+        echo "### ${{ inputs.loader }} (${{ inputs.mode }}): $COUNT job(s) à construire" >> "$GITHUB_STEP_SUMMARY"
