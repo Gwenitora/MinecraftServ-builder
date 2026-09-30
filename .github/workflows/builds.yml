@@ -1,4 +1,4 @@
-name: run-selected-builds
+name: builds
 
 # Permet de déclencher manuellement, en un seul clic, un ou plusieurs
 # workflows de build de loader (vanilla/bukkit/spigot/paper/forge/neoforge/
