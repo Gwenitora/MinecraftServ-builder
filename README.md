@@ -248,6 +248,12 @@ versions et les tags mouvants).
   `files.minecraftforge.net/fmllibs/`, un hôte définitivement mort (404) —
   le serveur ne peut jamais démarrer même si le build réussit. Ces versions
   sont automatiquement exclues par `resolve_versions.py`.
+- **Forge antérieur à 1.13** utilise systématiquement Java 8, quelle que
+  soit la version de Minecraft : son ancien launcher ("FML/launchwrapper")
+  caste explicitement le system classloader en `java.net.URLClassLoader`,
+  retiré en Java 9+, ce qui plante le serveur au démarrage. Géré
+  automatiquement par `resolve_versions.py` (indépendant de l'heuristique
+  Java générale utilisée par les autres loaders).
 - Quilt n'expose pas d'endpoint "jar serveur fusionné" prêt à l'emploi
   (contrairement à Fabric) : l'image exécute l'installeur officiel Quilt
   (`quilt-installer ... install server <mc> <loader> --download-server`) au

@@ -322,6 +322,18 @@ def provider_neoforge():
 MIN_FORGE_INSTALLER_MC = (1, 6, 0)
 
 
+# Avant 1.13, Forge utilise l'ancien "FML/launchwrapper" qui repose sur un
+# cast explicite vers java.net.URLClassLoader (system classloader). Retiré
+# en Java 9+ (remplacé par un classloader interne non castable), ce qui
+# plante le serveur au démarrage avec un ClassCastException, même si le
+# build Docker réussit (vérifié en local sur 1.12.2 avec Java 11 : crash
+# immédiat "AppClassLoader cannot be cast to URLClassLoader"). On force donc
+# Java 8 pour toutes ces versions, indépendamment de l'heuristique générale
+# `java_for_mc` (qui elle vaut pour Vanilla/Bukkit/Spigot, pas affectés par
+# ce problème spécifique à l'ancien launcher Forge).
+FORGE_LEGACY_LAUNCHER_MAX_MC = (1, 13, 0)
+
+
 def _provider_forge_like(metadata_url, installer_url_tpl):
     xml = http_text(metadata_url)
     versions = re.findall(r"<version>([^<]+)</version>", xml)
@@ -333,8 +345,9 @@ def _provider_forge_like(metadata_url, installer_url_tpl):
         mc_tuple = _mc_version_tuple(mc)
         if mc_tuple is not None and mc_tuple < MIN_FORGE_INSTALLER_MC:
             continue
+        java = "8" if mc_tuple is not None and mc_tuple < FORGE_LEGACY_LAUNCHER_MAX_MC else java_for_mc(mc)
         ch = loader_channel_from_string(loader)
-        entry = out.setdefault(mc, {"mc_version": mc, "mc_channel": "latest", "java": java_for_mc(mc), "loaders": []})
+        entry = out.setdefault(mc, {"mc_version": mc, "mc_channel": "latest", "java": java, "loaders": []})
         entry["loaders"].append({
             "id": loader, "channel": ch,
             "build_args": {"INSTALLER_URL": installer_url_tpl.format(full=url_segment(v))},
