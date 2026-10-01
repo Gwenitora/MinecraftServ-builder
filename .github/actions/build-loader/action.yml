@@ -85,8 +85,23 @@ runs:
               .; then
             echo "::error::Échec du build de ${LOADER} ${mc_version} (loader ${loader_version}). Arrêt : les versions suivantes ne seront pas construites."
             echo "### ❌ Arrêt sur ${mc_version} (loader ${loader_version}) — $((i - 1))/${TOTAL} version(s) construite(s) avec succès avant l'échec." >> "$GITHUB_STEP_SUMMARY"
+            echo "--- espace disque au moment de l'échec ---"
+            df -h / /var/lib/docker 2>/dev/null || true
+            docker system df 2>/dev/null || true
             exit 1
           fi
+
+          # Les runners GitHub-hosted n'ont qu'environ 14 Go libres : sur un
+          # backfill de centaines de versions en multi-arch, le cache
+          # buildx (une image temporaire par version, peu réutilisable d'une
+          # version à l'autre hormis les couches de base JAVA_IMAGE/
+          # JAVA_RUNTIME_IMAGE) finit par saturer le disque et fait échouer
+          # un build arbitraire plus loin dans la liste (symptôme observé :
+          # échecs non reproductibles en local, à une version différente à
+          # chaque run). On purge donc le cache après chaque version tout en
+          # gardant les couches de base (--keep-storage) pour ne pas
+          # re-télécharger inutilement les images Java à chaque itération.
+          docker buildx prune -f --keep-storage 20GB >/dev/null 2>&1 || true
         done < /tmp/jobs.ndjson
 
         echo "### ✅ ${TOTAL} version(s) construite(s) avec succès pour ${LOADER}." >> "$GITHUB_STEP_SUMMARY"
