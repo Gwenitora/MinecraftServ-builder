@@ -241,16 +241,21 @@ versions et les tags mouvants).
 
 ## Limites connues
 
-- **Forge antérieur à 1.5.2** (ex: 1.1, 1.4.x, 1.5, 1.5.1) n'est **pas
-  proposé** : ces versions ne publiaient pas de `-installer.jar` mais un
-  format `-server.zip`/`-client.zip` différent, non supporté par la
-  Dockerfile actuelle (basée sur l'installeur officiel). Elles sont
-  automatiquement exclues par `resolve_versions.py` plutôt que de faire
-  planter le build.
+- **Forge antérieur à 1.6** (ex: 1.1 à 1.5.2 inclus) n'est **pas
+  proposé** : avant 1.5.2, Forge ne publiait pas de `-installer.jar` (format
+  `-server.zip`/`-client.zip` différent, non supporté). Et 1.5.2 elle-même
+  est exclue car son FML télécharge au 1er lancement des librairies depuis
+  `files.minecraftforge.net/fmllibs/`, un hôte définitivement mort (404) —
+  le serveur ne peut jamais démarrer même si le build réussit. Ces versions
+  sont automatiquement exclues par `resolve_versions.py`.
 - Quilt n'expose pas d'endpoint "jar serveur fusionné" prêt à l'emploi
   (contrairement à Fabric) : l'image exécute l'installeur officiel Quilt
   (`quilt-installer ... install server <mc> <loader> --download-server`) au
   moment du build, qui télécharge lui-même le jar vanilla et les librairies.
+- **Vanilla antérieur à 1.2.5** (toutes les `old_alpha`/`old_beta`, et les
+  releases 1.0 à 1.2.4) n'est **pas proposé** : le manifeste officiel Mojang
+  ne référence aucun jar serveur dédié pour ces versions (champ
+  `downloads.server` absent), seulement un client. Automatiquement exclu.
 - Spigot/Bukkit sont compilés à la volée via BuildTools (légalement, aucun
   jar précompilé ne peut être redistribué) : le build est plus long que les
   autres loaders.

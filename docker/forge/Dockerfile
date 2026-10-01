@@ -18,19 +18,27 @@ RUN curl -fsSL -o installer.jar "$INSTALLER_URL"
 # L'installeur Forge moderne (>=1.17 environ) génère run.sh/run.bat qui
 # référencent des fichiers d'arguments (@libraries/.../unix_args.txt et
 # @user_jvm_args.txt). Pour les versions plus anciennes il produit
-# directement un jar "universal" exécutable avec -jar.
+# directement un jar "universal" exécutable avec -jar. Ce jar "universal"
+# référence dans son manifeste Class-Path: minecraft_server.jar (nom
+# générique), alors que l'installeur télécharge un nom versionné
+# (minecraft_server.X.jar) : on crée un lien générique pour que le
+# classpath du jar le retrouve (sinon: "Could not find or load main class
+# net.minecraft.server.MinecraftServer").
 RUN set -eux; \
     java -jar installer.jar --installServer; \
     rm -f installer.jar installer.jar.log; \
     echo "forge-${MC_VERSION}-${LOADER_VERSION}" > .version; \
+    if ! [ -f minecraft_server.jar ] && ls minecraft_server*.jar >/dev/null 2>&1; then \
+        ln -s "$(ls minecraft_server*.jar | head -n1)" minecraft_server.jar; \
+    fi; \
     if [ -f run.sh ]; then \
         ARGFILE=$(grep -oE '@libraries[^"[:space:]]*\.txt' run.sh | head -n1); \
         HAS_USERARGS=$(grep -c '@user_jvm_args.txt' run.sh || true); \
         USERARGS_PART=""; \
         [ "$HAS_USERARGS" != "0" ] && USERARGS_PART="@user_jvm_args.txt"; \
         printf '#!/bin/sh\nexec java $JAVA_OPTS %s %s nogui "$@"\n' "$USERARGS_PART" "$ARGFILE" > run.sh; \
-    elif ls forge-*-universal.jar >/dev/null 2>&1; then \
-        JAR=$(ls forge-*-universal.jar | head -n1); \
+    elif ls *-universal*.jar >/dev/null 2>&1; then \
+        JAR=$(ls *-universal*.jar | head -n1); \
         printf '#!/bin/sh\nexec java $JAVA_OPTS -jar %s nogui "$@"\n' "$JAR" > run.sh; \
     else \
         echo "Impossible de déterminer le script de lancement Forge pour ${MC_VERSION}-${LOADER_VERSION}" >&2; \

@@ -66,6 +66,18 @@ def loader_channel_from_string(v):
     return "latest"
 
 
+def sanitize_tag(tag):
+    """Un tag Docker n'autorise que [A-Za-z0-9_.-] et doit commencer par un
+    alphanumérique/underscore. Certains identifiants de version (ex: Mojang
+    "1.14 Pre-Release 1", "3D Shareware v1.34") contiennent des espaces ou
+    d'autres caractères invalides : on les remplace plutôt que de laisser
+    `docker buildx build -t ...` planter sur un tag malformé."""
+    t = re.sub(r"[^A-Za-z0-9_.-]", "-", tag)
+    if not re.match(r"^[A-Za-z0-9_]", t):
+        t = "v" + t
+    return t
+
+
 def _mc_version_tuple(mc_version):
     """Parse le préfixe numérique pointé d'une version MC ("1.5.2" -> (1,5,2)).
     Retourne None si non parsable (snapshots/alias non numériques)."""
@@ -145,16 +157,34 @@ def job_sort_key(e, loader_id):
 # {mc_version, mc_channel, java, loaders: [{id, channel, build_args}]}
 # ---------------------------------------------------------------------------
 
+# Avant la 1.2.5 (29/03/2012), le manifeste Mojang ne publie aucun jar
+# serveur dédié (champ "downloads.server" absent) : tout old_alpha, tout
+# old_beta, et les releases 1.0 à 1.2.4 n'ont qu'un client. Vérifié
+# exhaustivement sur les 35 versions old_alpha + les releases 1.0-1.2.4 : le
+# champ est systématiquement absent avant, systématiquement présent à partir
+# de 1.2.5. On exclut donc ces versions plutôt que de planter le build (le
+# Dockerfile ferait échouer un `curl` sur une URL "null").
+VANILLA_MIN_RELEASE_TIME = "2012-03-29T22:00:00+00:00"
+
+
+def _parse_iso(ts):
+    return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+
 def provider_vanilla():
     data = http_json("https://launchermeta.mojang.com/mc/game/version_manifest_v2.json")
+    cutoff = _parse_iso(VANILLA_MIN_RELEASE_TIME)
     out = []
     for v in data["versions"]:
+        rt = v.get("releaseTime")
+        if rt and _parse_iso(rt) < cutoff:
+            continue
         ch = mc_channel_from_type(v["type"])
         out.append({
             "mc_version": v["id"],
             "mc_channel": ch,
             "java": java_for_mc(v["id"]),
-            "release_time": v.get("releaseTime"),
+            "release_time": rt,
             "loaders": [{
                 "id": v["id"],
                 "channel": ch,
@@ -243,7 +273,14 @@ def provider_neoforge():
 # (basé sur l'installeur) et sont donc explicitement exclues plutôt que de
 # planter le build. Vérifié: 1.5.2-7.8.0.684 est la 1ère build avec un
 # installer.jar (200), tout ce qui est strictement avant 1.5.2 renvoie 404.
-MIN_FORGE_INSTALLER_MC = (1, 5, 2)
+#
+# MC 1.5.2 elle-même est en plus exclue : son FML ("relauncher") télécharge
+# au 1er lancement des libs (argo, guava, scala-library, deobfuscation
+# data...) depuis http://files.minecraftforge.net/fmllibs/, un hôte
+# définitivement mort (404 confirmé) — le serveur ne peut donc jamais
+# démarrer, même si le build Docker réussit. À partir de 1.6.x ces libs sont
+# embarquées directement (testé/validé en local sur 1.6.1/1.6.2/1.6.4).
+MIN_FORGE_INSTALLER_MC = (1, 6, 0)
 
 
 def _provider_forge_like(metadata_url, installer_url_tpl):
@@ -459,6 +496,8 @@ def build_jobs(loader_name, entries, mode, known_tags):
                         {f"{d}-experimental" for d in depths}, dl["build_args"], job_sort_key(global_experimental_mc, dl["id"]))
 
     result = list(jobs.values())
+    for j in result:
+        j["tags"] = {sanitize_tag(t) for t in j["tags"]}
 
     if mode == "daily":
         # ne garde que les jobs touchant au moins un tag encore jamais publié,
