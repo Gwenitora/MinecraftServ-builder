@@ -31,6 +31,10 @@ on:
       - .github/actions/reset-images/**
       - .github/workflows/quilt.yml
 
+concurrency:
+  group: quilt-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest

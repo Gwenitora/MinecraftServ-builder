@@ -31,6 +31,10 @@ on:
       - .github/actions/reset-images/**
       - .github/workflows/neoforge.yml
 
+concurrency:
+  group: neoforge-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
