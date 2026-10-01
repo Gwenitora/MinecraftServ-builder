@@ -27,6 +27,7 @@ import datetime
 import json
 import re
 import sys
+import urllib.parse
 import urllib.request
 
 UA = {"User-Agent": "MinecraftServ-builder/1.0 (+https://github.com/Gwenitora/MinecraftServ-builder)"}
@@ -43,6 +44,15 @@ def http_text(url):
     req = urllib.request.Request(url, headers=UA)
     with urllib.request.urlopen(req, timeout=30) as r:
         return r.read().decode("utf-8")
+
+
+def url_segment(s):
+    """Encode un segment de chemin d'URL (ex: 'id' de version Minecraft
+    interpolé dans un template). Certains identifiants Mojang/loader
+    contiennent des espaces ("1.14 Pre-Release 1") ou d'autres caractères
+    invalides dans une URL/requête HTTP brute (curl les rejette avec
+    "Malformed input to a URL function")."""
+    return urllib.parse.quote(s, safe="")
 
 
 # ---------------------------------------------------------------------------
@@ -200,17 +210,29 @@ def _spigot_bukkit_versions():
     return sorted({i for i in ids if i != "latest"})
 
 
+# "1.8" (seule, sans patch) compile spigot-api 1.8-R0.1-SNAPSHOT, qui dépend
+# de net.md-5:bungeecord-chat:1.8-SNAPSHOT. Ce snapshot n'a jamais été promu
+# en release et a depuis été purgé de tous les dépôts Sonatype connus
+# (oss.sonatype.org et hub.spigotmc.org renvoient 404) : la résolution Maven
+# échoue donc définitivement. Confirmé isolé à cette unique version : 1.8.8
+# (et CraftBukkit 1.8, qui ne dépend pas de bungeecord-chat) compilent sans
+# problème.
+SPIGOT_BROKEN_VERSIONS = {"1.8"}
+
+
 def provider_spigot():
-    return _provider_buildtools()
+    return _provider_buildtools(exclude=SPIGOT_BROKEN_VERSIONS)
 
 
 def provider_bukkit():
     return _provider_buildtools()
 
 
-def _provider_buildtools():
+def _provider_buildtools(exclude=frozenset()):
     out = []
     for mc in _spigot_bukkit_versions():
+        if mc in exclude:
+            continue
         ch = "latest"
         if re.search(r"(pre|rc)", mc):
             ch = "snapshot"
@@ -229,7 +251,7 @@ def provider_paper():
     for family, versions in data["versions"].items():
         for mc in versions:
             ch = "snapshot" if re.search(r"(pre|rc)", mc) else "latest"
-            builds = http_json(f"https://fill.papermc.io/v3/projects/paper/versions/{mc}/builds")
+            builds = http_json(f"https://fill.papermc.io/v3/projects/paper/versions/{url_segment(mc)}/builds")
             loaders = []
             for b in builds:
                 dl = b.get("downloads", {}).get("server:default")
@@ -249,10 +271,24 @@ def provider_forge():
     )
 
 
+# "20.4.0-beta" embarque un installeur dont la vérification de connectivité
+# réseau (net.minecraftforge.installer.SimpleInstaller.getIps) interroge
+# entre autres "authserver.mojang.com" ; ce nom a un CNAME vers une
+# distribution CloudFront aujourd'hui supprimée (NXDOMAIN confirmé), donc la
+# vérification échoue toujours et l'installeur plante avec un
+# NullPointerException avant même de démarrer l'installation. Toutes les
+# autres versions testées autour (20.2.3-beta, 20.3.1-beta, 20.5.0-beta,
+# 20.6.1-beta, 20.4.167, 21.0.0-beta) construisent sans problème : c'est un
+# artefact isolé et définitivement cassé en amont, pas un bug de notre côté.
+NEOFORGE_BROKEN_VERSIONS = {"20.4.0-beta"}
+
+
 def provider_neoforge():
     data = http_json("https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge")
     out = {}
     for v in data["versions"]:
+        if v in NEOFORGE_BROKEN_VERSIONS:
+            continue
         m = re.match(r"^(\d+)\.(\d+)\.", v)
         if not m:
             continue
@@ -262,7 +298,7 @@ def provider_neoforge():
         entry = out.setdefault(mc, {"mc_version": mc, "mc_channel": "latest", "java": java_for_mc(mc), "loaders": []})
         entry["loaders"].append({
             "id": v, "channel": ch,
-            "build_args": {"INSTALLER_URL": f"https://maven.neoforged.net/releases/net/neoforged/neoforge/{v}/neoforge-{v}-installer.jar"},
+            "build_args": {"INSTALLER_URL": f"https://maven.neoforged.net/releases/net/neoforged/neoforge/{url_segment(v)}/neoforge-{url_segment(v)}-installer.jar"},
         })
     return list(out.values())
 
@@ -298,7 +334,7 @@ def _provider_forge_like(metadata_url, installer_url_tpl):
         entry = out.setdefault(mc, {"mc_version": mc, "mc_channel": "latest", "java": java_for_mc(mc), "loaders": []})
         entry["loaders"].append({
             "id": loader, "channel": ch,
-            "build_args": {"INSTALLER_URL": installer_url_tpl.format(full=v)},
+            "build_args": {"INSTALLER_URL": installer_url_tpl.format(full=url_segment(v))},
         })
     return list(out.values())
 
@@ -324,7 +360,7 @@ def provider_fabric():
             lch = "latest" if l.get("stable") else "experimental"
             entries.append({
                 "id": l["version"], "channel": lch,
-                "build_args": {"JAR_URL": jar_url_tpl.format(game=mc, loader=l["version"], installer=stable_installer)},
+                "build_args": {"JAR_URL": jar_url_tpl.format(game=url_segment(mc), loader=url_segment(l["version"]), installer=url_segment(stable_installer))},
             })
         out.append({"mc_version": mc, "mc_channel": ch, "java": java_for_mc(mc), "loaders": entries})
     return out

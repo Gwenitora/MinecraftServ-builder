@@ -259,6 +259,17 @@ versions et les tags mouvants).
 - Spigot/Bukkit sont compilés à la volée via BuildTools (légalement, aucun
   jar précompilé ne peut être redistribué) : le build est plus long que les
   autres loaders.
+- **Spigot 1.8** (uniquement cette version précise, pas 1.8.1+) n'est **pas
+  proposée** : elle dépend de `net.md-5:bungeecord-chat:1.8-SNAPSHOT`, un
+  artefact jamais promu en release et depuis purgé de tous les dépôts
+  Sonatype connus (404 partout). CraftBukkit 1.8 (qui ne dépend pas de ce
+  module) reste disponible normalement. Automatiquement exclue.
+- **NeoForge 20.4.0-beta** (MC 1.20.4) n'est **pas proposée** : son
+  installeur embarque une vérification de connectivité réseau qui interroge
+  `authserver.mojang.com`, un nom dont le CNAME pointe vers une distribution
+  CloudFront aujourd'hui supprimée (NXDOMAIN permanent). Toutes les autres
+  versions (y compris les betas voisines) ne sont pas affectées.
+  Automatiquement exclue.
 - L'association d'une snapshot/version expérimentale à une "profondeur" de
   release (ex: `1.21-snapshot`) est une heuristique du resolver — en cas de
   changement de nommage côté Mojang/loader, vérifiez le tag exact généré sur
