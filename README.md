@@ -259,11 +259,13 @@ versions et les tags mouvants).
 - Spigot/Bukkit sont compilés à la volée via BuildTools (légalement, aucun
   jar précompilé ne peut être redistribué) : le build est plus long que les
   autres loaders.
-- **Spigot 1.8** (uniquement cette version précise, pas 1.8.1+) n'est **pas
-  proposée** : elle dépend de `net.md-5:bungeecord-chat:1.8-SNAPSHOT`, un
-  artefact jamais promu en release et depuis purgé de tous les dépôts
-  Sonatype connus (404 partout). CraftBukkit 1.8 (qui ne dépend pas de ce
-  module) reste disponible normalement. Automatiquement exclue.
+- **Spigot 1.8 et 1.8.3** (uniquement ces deux versions précises) ne sont
+  **pas proposées** : elles dépendent de
+  `net.md-5:bungeecord-chat:1.8-SNAPSHOT`, un artefact jamais promu en
+  release et depuis purgé de tous les dépôts Sonatype/mirrors connus (404
+  partout). 1.8.4 à 1.8.8 partagent un autre build et ne sont pas affectées.
+  CraftBukkit 1.8/1.8.3 (qui ne dépendent pas de ce module) restent
+  disponibles normalement. Automatiquement exclues.
 - **NeoForge 20.4.0-beta** (MC 1.20.4) n'est **pas proposée** : son
   installeur embarque une vérification de connectivité réseau qui interroge
   `authserver.mojang.com`, un nom dont le CNAME pointe vers une distribution

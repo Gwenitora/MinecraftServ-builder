@@ -210,14 +210,17 @@ def _spigot_bukkit_versions():
     return sorted({i for i in ids if i != "latest"})
 
 
-# "1.8" (seule, sans patch) compile spigot-api 1.8-R0.1-SNAPSHOT, qui dépend
-# de net.md-5:bungeecord-chat:1.8-SNAPSHOT. Ce snapshot n'a jamais été promu
-# en release et a depuis été purgé de tous les dépôts Sonatype connus
-# (oss.sonatype.org et hub.spigotmc.org renvoient 404) : la résolution Maven
-# échoue donc définitivement. Confirmé isolé à cette unique version : 1.8.8
-# (et CraftBukkit 1.8, qui ne dépend pas de bungeecord-chat) compilent sans
-# problème.
-SPIGOT_BROKEN_VERSIONS = {"1.8"}
+# "1.8" et "1.8.3" dépendent (via spigot-api) de
+# net.md-5:bungeecord-chat:1.8-SNAPSHOT. Ce snapshot n'a jamais été promu en
+# release et a depuis été purgé de tous les dépôts Sonatype/mirrors connus
+# (oss.sonatype.org, hub.spigotmc.org, repo.phoenix616.dev... tous en 404) :
+# la résolution Maven échoue donc définitivement. "1.8.4" à "1.8.8"
+# partagent le même BuildData (build "582b", vérifié via
+# hub.spigotmc.org/versions/<v>.json) et compilent sans problème (testé:
+# 1.8.4 et 1.8.8) ; seules "1.8" (build legacy) et "1.8.3" (build "422") ont
+# un pin différent et cassé. CraftBukkit (bukkit), qui ne dépend pas de
+# bungeecord-chat, n'est pas affecté.
+SPIGOT_BROKEN_VERSIONS = {"1.8", "1.8.3"}
 
 
 def provider_spigot():
