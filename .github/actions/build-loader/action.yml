@@ -9,8 +9,8 @@ inputs:
   loader:
     description: "vanilla | bukkit | spigot | paper | forge | neoforge | fabric | quilt"
     required: true
-  matrix_json:
-    description: 'Matrix JSON au format {"include": [...]} (sortie de resolve-versions)'
+  matrix_file:
+    description: 'Chemin vers le fichier JSON {"include": [...]} (sortie de resolve-versions), lu directement sur disque pour éviter toute limite de taille des variables d''environnement/outputs GitHub Actions'
     required: true
   dockerhub_username:
     required: true
@@ -36,10 +36,15 @@ runs:
       shell: bash
       env:
         LOADER: ${{ inputs.loader }}
-        MATRIX_JSON: ${{ inputs.matrix_json }}
+        MATRIX_FILE: ${{ inputs.matrix_file }}
       run: |
         set -euo pipefail
-        echo "$MATRIX_JSON" | jq -c '.include[]' > /tmp/jobs.ndjson
+        # Le JSON est lu directement depuis le fichier sur disque (jamais via
+        # une variable d'environnement / un output GitHub Actions), car les
+        # matrices peuvent dépasser les limites de taille de l'environnement
+        # d'un process (erreur "Argument list too long" observée avec des
+        # matrices de ~250 Ko+, ex: vanilla/fabric en mode daily initial).
+        jq -c '.include[]' "$MATRIX_FILE" > /tmp/jobs.ndjson
         TOTAL=$(wc -l < /tmp/jobs.ndjson)
         echo "== $TOTAL version(s) à construire pour $LOADER (ordre chronologique) =="
 

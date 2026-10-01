@@ -66,6 +66,17 @@ def loader_channel_from_string(v):
     return "latest"
 
 
+def _mc_version_tuple(mc_version):
+    """Parse le préfixe numérique pointé d'une version MC ("1.5.2" -> (1,5,2)).
+    Retourne None si non parsable (snapshots/alias non numériques)."""
+    parts = []
+    for p in mc_version.split("."):
+        if not p.isdigit():
+            return None
+        parts.append(int(p))
+    return tuple(parts) if parts else None
+
+
 def depth_tags(mc_version):
     """1.21.2 -> ['1', '1.21', '1.21.2'] ; 26.3 -> ['26', '26.3']
     Ignoré si une partie n'est pas purement numérique (pre/rc/snapshots)."""
@@ -226,6 +237,15 @@ def provider_neoforge():
     return list(out.values())
 
 
+# Avant MC 1.5.2, Forge ne publiait pas de "-installer.jar" mais des
+# "-server.zip"/"-client.zip" (format legacy, binaire patché différemment).
+# Ces versions ne peuvent pas être construites par notre Dockerfile actuel
+# (basé sur l'installeur) et sont donc explicitement exclues plutôt que de
+# planter le build. Vérifié: 1.5.2-7.8.0.684 est la 1ère build avec un
+# installer.jar (200), tout ce qui est strictement avant 1.5.2 renvoie 404.
+MIN_FORGE_INSTALLER_MC = (1, 5, 2)
+
+
 def _provider_forge_like(metadata_url, installer_url_tpl):
     xml = http_text(metadata_url)
     versions = re.findall(r"<version>([^<]+)</version>", xml)
@@ -234,6 +254,9 @@ def _provider_forge_like(metadata_url, installer_url_tpl):
         if "-" not in v:
             continue
         mc, loader = v.split("-", 1)
+        mc_tuple = _mc_version_tuple(mc)
+        if mc_tuple is not None and mc_tuple < MIN_FORGE_INSTALLER_MC:
+            continue
         ch = loader_channel_from_string(loader)
         entry = out.setdefault(mc, {"mc_version": mc, "mc_channel": "latest", "java": java_for_mc(mc), "loaders": []})
         entry["loaders"].append({
@@ -244,24 +267,13 @@ def _provider_forge_like(metadata_url, installer_url_tpl):
 
 
 def provider_fabric():
-    return _provider_fabric_like(
-        "https://meta.fabricmc.net/v2/versions/game",
-        "https://meta.fabricmc.net/v2/versions/loader",
-        "https://meta.fabricmc.net/v2/versions/installer",
-        "https://meta.fabricmc.net/v2/versions/loader/{game}/{loader}/{installer}/server/jar",
-    )
+    """Fabric expose un endpoint officiel qui fournit directement le jar
+    serveur fusionné (loader + mappings intermédiaires), vérifié fonctionnel."""
+    game_url = "https://meta.fabricmc.net/v2/versions/game"
+    loader_url = "https://meta.fabricmc.net/v2/versions/loader"
+    installer_url = "https://meta.fabricmc.net/v2/versions/installer"
+    jar_url_tpl = "https://meta.fabricmc.net/v2/versions/loader/{game}/{loader}/{installer}/server/jar"
 
-
-def provider_quilt():
-    return _provider_fabric_like(
-        "https://meta.quiltmc.org/v3/versions/game",
-        "https://meta.quiltmc.org/v3/versions/loader",
-        "https://meta.quiltmc.org/v3/versions/installer",
-        "https://meta.quiltmc.org/v3/versions/loader/{game}/{loader}/{installer}/server/jar",
-    )
-
-
-def _provider_fabric_like(game_url, loader_url, installer_url, jar_url_tpl):
     games = http_json(game_url)
     loaders = http_json(loader_url)
     installers = http_json(installer_url)
@@ -279,6 +291,37 @@ def _provider_fabric_like(game_url, loader_url, installer_url, jar_url_tpl):
             })
         out.append({"mc_version": mc, "mc_channel": ch, "java": java_for_mc(mc), "loaders": entries})
     return out
+
+
+def provider_quilt():
+    """Quilt n'expose PAS d'endpoint "server/jar" prêt à l'emploi (contrairement
+    à Fabric) : il faut exécuter le quilt-installer au moment du build, qui
+    télécharge lui-même le serveur vanilla et merge le loader
+    (cf. docker/quilt/Dockerfile). On fournit donc juste l'URL de
+    l'installeur ; MC_VERSION/LOADER_VERSION sont déjà passés par ailleurs.
+    Les entrées du loader n'ont pas de champ "stable" exploitable dans cette
+    API (contrairement à Fabric) : on déduit le canal du nom de version."""
+    games = http_json("https://meta.quiltmc.org/v3/versions/game")
+    loaders = http_json("https://meta.quiltmc.org/v3/versions/loader")
+    installers = http_json("https://meta.quiltmc.org/v3/versions/installer")
+    installer_url_by_version = {i["version"]: i["url"] for i in installers}
+    stable_installer = installers[0]["version"]
+    installer_url = installer_url_by_version[stable_installer]
+
+    out = []
+    for g in games:
+        mc = g["version"]
+        ch = "latest" if g.get("stable") else "snapshot"
+        entries = []
+        for l in loaders:
+            lch = loader_channel_from_string(l["version"])
+            entries.append({
+                "id": l["version"], "channel": lch,
+                "build_args": {"INSTALLER_URL": installer_url},
+            })
+        out.append({"mc_version": mc, "mc_channel": ch, "java": java_for_mc(mc), "loaders": entries})
+    return out
+
 
 
 PROVIDERS = {

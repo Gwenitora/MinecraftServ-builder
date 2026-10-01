@@ -241,9 +241,16 @@ versions et les tags mouvants).
 
 ## Limites connues
 
-- Forge antérieur à ~1.17 utilise un format d'installeur différent
-  (jar "universal" au lieu de `run.sh`) : la Dockerfile gère ce cas mais des
-  versions très anciennes peuvent nécessiter un ajustement ponctuel.
+- **Forge antérieur à 1.5.2** (ex: 1.1, 1.4.x, 1.5, 1.5.1) n'est **pas
+  proposé** : ces versions ne publiaient pas de `-installer.jar` mais un
+  format `-server.zip`/`-client.zip` différent, non supporté par la
+  Dockerfile actuelle (basée sur l'installeur officiel). Elles sont
+  automatiquement exclues par `resolve_versions.py` plutôt que de faire
+  planter le build.
+- Quilt n'expose pas d'endpoint "jar serveur fusionné" prêt à l'emploi
+  (contrairement à Fabric) : l'image exécute l'installeur officiel Quilt
+  (`quilt-installer ... install server <mc> <loader> --download-server`) au
+  moment du build, qui télécharge lui-même le jar vanilla et les librairies.
 - Spigot/Bukkit sont compilés à la volée via BuildTools (légalement, aucun
   jar précompilé ne peut être redistribué) : le build est plus long que les
   autres loaders.

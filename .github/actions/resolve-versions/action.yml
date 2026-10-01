@@ -22,9 +22,9 @@ inputs:
     default: "0"
 
 outputs:
-  matrix:
-    description: 'Matrix JSON au format {"include": [...]}'
-    value: ${{ steps.build-matrix.outputs.matrix }}
+  matrix_file:
+    description: "Chemin (dans le workspace) du fichier JSON contenant la matrix"
+    value: ${{ steps.build-matrix.outputs.matrix_file }}
   count:
     description: "Nombre de jobs à construire"
     value: ${{ steps.build-matrix.outputs.count }}
@@ -61,5 +61,5 @@ runs:
         python3 scripts/resolve_versions.py $ARGS > matrix.json
         COUNT=$(jq '.include | length' matrix.json)
         echo "count=$COUNT" >> "$GITHUB_OUTPUT"
-        echo "matrix=$(cat matrix.json)" >> "$GITHUB_OUTPUT"
+        echo "matrix_file=matrix.json" >> "$GITHUB_OUTPUT"
         echo "### ${{ inputs.loader }} (${{ inputs.mode }}): $COUNT job(s) à construire" >> "$GITHUB_STEP_SUMMARY"
