@@ -27,8 +27,6 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # Les runners GitHub-hosted ont une limite dure de 6h : au-delà, découpez
-    # un backfill complet en plusieurs runs avec --limit/--offset.
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
