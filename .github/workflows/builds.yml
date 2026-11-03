@@ -1,9 +1,5 @@
 name: builds
 
-# Permet de déclencher manuellement, en un seul clic, un ou plusieurs
-# workflows de build de loader (vanilla/bukkit/spigot/paper/forge/neoforge/
-# fabric/quilt) sans avoir à ouvrir chaque workflow séparément.
-
 on:
   workflow_dispatch:
     inputs:
@@ -33,6 +29,9 @@ on:
         type: boolean
         default: false
       quilt:
+        type: boolean
+        default: false
+      velocity:
         type: boolean
         default: false
       mode:
@@ -66,7 +65,7 @@ jobs:
       - name: Déclencher les workflows sélectionnés
         run: |
           set -euo pipefail
-          LOADERS="vanilla bukkit spigot paper forge neoforge fabric quilt"
+          LOADERS="vanilla bukkit spigot paper forge neoforge fabric quilt velocity"
           TRIGGERED=""
           for loader in $LOADERS; do
             selected=false
@@ -82,6 +81,7 @@ jobs:
               neoforge) [ "${{ inputs.neoforge }}" = "true" ] && selected=true ;;
               fabric)   [ "${{ inputs.fabric }}" = "true" ] && selected=true ;;
               quilt)    [ "${{ inputs.quilt }}" = "true" ] && selected=true ;;
+              velocity) [ "${{ inputs.velocity }}" = "true" ] && selected=true ;;
             esac
             if [ "$selected" = "true" ]; then
               echo "→ Déclenchement de ${loader}.yml (mode=${{ inputs.mode }})"

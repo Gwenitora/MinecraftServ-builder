@@ -1,8 +1,8 @@
-# Image "bukkit" (CraftBukkit) — compilé via BuildTools officiel
-# (https://www.spigotmc.org/wiki/buildtools/). CraftBukkit est l'implémentation
-# de référence de l'API Bukkit, sans les optimisations Spigot.
+# "bukkit" image (CraftBukkit): compiled with the official BuildTools
+# (https://www.spigotmc.org/wiki/buildtools/). CraftBukkit is the reference
+# implementation of the Bukkit API, without the Spigot optimizations.
 #
-# Build args attendus (fournis par scripts/resolve_versions.py):
+# Expected build args (provided by scripts/resolve_versions.py):
 #   JAVA_IMAGE, JAVA_RUNTIME_IMAGE, MC_VERSION (= BUILDTOOLS_REV)
 ARG JAVA_IMAGE=eclipse-temurin:21-jdk-jammy
 ARG JAVA_RUNTIME_IMAGE=eclipse-temurin:21-jre-jammy

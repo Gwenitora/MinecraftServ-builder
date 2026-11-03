@@ -1,6 +1,6 @@
-# Image "forge" — https://files.minecraftforge.net
+# "forge" image: https://files.minecraftforge.net
 #
-# Build args attendus (fournis par scripts/resolve_versions.py):
+# Expected build args (provided by scripts/resolve_versions.py):
 #   JAVA_IMAGE, JAVA_RUNTIME_IMAGE, MC_VERSION, LOADER_VERSION, INSTALLER_URL
 ARG JAVA_IMAGE=eclipse-temurin:21-jdk-jammy
 ARG JAVA_RUNTIME_IMAGE=eclipse-temurin:21-jre-jammy
@@ -15,15 +15,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf 
 
 RUN curl -fsSL -o installer.jar "$INSTALLER_URL"
 
-# L'installeur Forge moderne (>=1.17 environ) génère run.sh/run.bat qui
-# référencent des fichiers d'arguments (@libraries/.../unix_args.txt et
-# @user_jvm_args.txt). Pour les versions intermédiaires (~1.6-1.12.x) il
-# produit directement un jar exécutable avec -jar : soit un jar "universal"
-# (nom contenant "universal"), soit (ex: 1.12.2) directement
-# "forge-<mc>-<loader>.jar" sans suffixe particulier. Ce jar référence dans
-# son manifeste Class-Path: minecraft_server.jar (nom générique), alors que
-# l'installeur télécharge un nom versionné (minecraft_server.X.jar) : on
-# crée un lien générique pour que le classpath du jar le retrouve (sinon:
+# The modern Forge installer (roughly >= 1.17) generates run.sh/run.bat,
+# which reference argument files (@libraries/.../unix_args.txt and
+# @user_jvm_args.txt). For intermediate versions (~1.6-1.12.x) it directly
+# produces a jar runnable with -jar: either a "universal" jar (name
+# containing "universal"), or (e.g. 1.12.2) directly
+# "forge-<mc>-<loader>.jar" with no particular suffix. That jar's manifest
+# references Class-Path: minecraft_server.jar (generic name), while the
+# installer downloads a versioned name (minecraft_server.X.jar): a generic
+# link is created so the jar's classpath can find it (otherwise:
 # "Could not find or load main class net.minecraft.server.MinecraftServer").
 RUN set -eux; \
     java -jar installer.jar --installServer; \

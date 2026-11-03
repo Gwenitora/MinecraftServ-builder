@@ -1,9 +1,11 @@
 name: Build & push loader images sequentially
 description: >
-  Construit et pousse, une par une et dans l'ordre chronologique, toutes les
-  images d'un loader décrites par la matrix JSON fournie (sortie de l'action
-  resolve-versions). S'arrête immédiatement (sans traiter les versions
-  suivantes) si une version échoue à builder ou à se pousser.
+  Construit et pousse, une par une et dans l'ordre fourni par la matrix
+  (tags mouvants d'abord en mode daily, puis ordre chronologique), toutes les
+  images d'un loader décrites par la matrix JSON (sortie de l'action
+  resolve-versions). Par défaut, un échec n'arrête plus le run : la version
+  est réessayée une fois, puis notée en échec, et les suivantes sont quand
+  même construites ; le job échoue à la fin s'il reste au moins un échec.
 
 inputs:
   loader:
@@ -16,10 +18,24 @@ inputs:
     required: true
   dockerhub_token:
     required: true
+  continue_on_error:
+    description: "true = continuer après l'échec d'une version (échec global du job à la fin) ; false = arrêt au premier échec"
+    required: false
+    default: "true"
 
 runs:
   using: composite
   steps:
+    # GitHub-hosted runners only have about 14 GB free. About 25 GB are
+    # reclaimed by removing preinstalled SDKs that are useless here.
+    - name: Libérer de l'espace disque
+      shell: bash
+      run: |
+        df -h / || true
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+        docker image prune -af >/dev/null 2>&1 || true
+        df -h / || true
+
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
 
@@ -32,38 +48,73 @@ runs:
         username: ${{ inputs.dockerhub_username }}
         password: ${{ inputs.dockerhub_token }}
 
-    - name: Build & push séquentiel (ordre chronologique, arrêt au premier échec)
+    - name: Build & push séquentiel
       shell: bash
       env:
         LOADER: ${{ inputs.loader }}
         MATRIX_FILE: ${{ inputs.matrix_file }}
+        CONTINUE_ON_ERROR: ${{ inputs.continue_on_error }}
       run: |
         set -euo pipefail
-        # Le JSON est lu directement depuis le fichier sur disque (jamais via
-        # une variable d'environnement / un output GitHub Actions), car les
-        # matrices peuvent dépasser les limites de taille de l'environnement
-        # d'un process (erreur "Argument list too long" observée avec des
-        # matrices de ~250 Ko+, ex: vanilla/fabric en mode daily initial).
+        # The JSON is read directly from the file on disk (never through an
+        # environment variable / GitHub Actions output), because matrices can
+        # exceed a process's environment size limits ("Argument list too
+        # long" error seen with ~250 KB+ matrices, e.g. vanilla/fabric on the
+        # initial daily run).
         jq -c '.include[]' "$MATRIX_FILE" > /tmp/jobs.ndjson
         TOTAL=$(wc -l < /tmp/jobs.ndjson)
-        echo "== $TOTAL version(s) à construire pour $LOADER (ordre chronologique) =="
+        echo "== $TOTAL version(s) à construire pour $LOADER =="
+
+        # Java base images are pulled from the ECR Public mirror of the
+        # official Docker images (public.ecr.aws/docker/library) rather than
+        # from Docker Hub: Docker Hub pulls are rate limited per account/hour
+        # and every version re-resolves the base images for 2 architectures,
+        # which made builds fail at random points.
+        BASE="public.ecr.aws/docker/library/eclipse-temurin"
+
+        build_one() {
+          # Migration job (see apply_migration in resolve_versions.py): add
+          # the missing tags to an already published image, no compilation.
+          if [ -n "$retag_from" ]; then
+            docker buildx imagetools create "${tag_args[@]}" "minecraftserv/${LOADER}:${retag_from}"
+            return
+          fi
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            -f "docker/${LOADER}/Dockerfile" \
+            "${tag_args[@]}" \
+            "${build_arg_args[@]}" \
+            --push \
+            .
+        }
 
         i=0
+        ok=0
+        failed=()
+        retag_failed=0
         while IFS= read -r job; do
           i=$((i + 1))
           mc_version=$(echo "$job" | jq -r '.mc_version')
           loader_version=$(echo "$job" | jq -r '.loader_version')
           java=$(echo "$job" | jq -r '.java')
+          retag_from=$(echo "$job" | jq -r '.retag_from // empty')
+          marker_tag=$(echo "$job" | jq -r '.marker_tag // empty')
 
           case "$java" in
-            8) java_build=eclipse-temurin:8-jdk-jammy; java_runtime=eclipse-temurin:8-jre-jammy ;;
-            11) java_build=eclipse-temurin:11-jdk-jammy; java_runtime=eclipse-temurin:11-jre-jammy ;;
-            17) java_build=eclipse-temurin:17-jdk-jammy; java_runtime=eclipse-temurin:17-jre-jammy ;;
-            *) java_build=eclipse-temurin:21-jdk-jammy; java_runtime=eclipse-temurin:21-jre-jammy ;;
+            8) java_build=${BASE}:8-jdk-jammy; java_runtime=${BASE}:8-jre-jammy ;;
+            11) java_build=${BASE}:11-jdk-jammy; java_runtime=${BASE}:11-jre-jammy ;;
+            17) java_build=${BASE}:17-jdk-jammy; java_runtime=${BASE}:17-jre-jammy ;;
+            *) java_build=${BASE}:21-jdk-jammy; java_runtime=${BASE}:21-jre-jammy ;;
           esac
 
           tag_args=()
           while IFS= read -r t; do
+            # Never publish the migration marker if an earlier retag failed:
+            # the migration must then be resumed on the next daily run.
+            if [ -n "$marker_tag" ] && [ "$t" = "$marker_tag" ] && [ "$retag_failed" = "1" ]; then
+              echo "::warning::Migration incomplète : ${marker_tag} non publié, elle reprendra au prochain daily."
+              continue
+            fi
             tag_args+=(-t "minecraftserv/${LOADER}:${t}")
           done < <(echo "$job" | jq -r '.tags[]')
 
@@ -74,34 +125,38 @@ runs:
 
           tags_display=$(echo "$job" | jq -r '.tags | join(", ")')
           echo ""
-          echo "[$i/$TOTAL] ${LOADER} ${mc_version} (loader ${loader_version}) -> ${tags_display}"
+          if [ -n "$retag_from" ]; then
+            echo "[$i/$TOTAL] ${LOADER} ${mc_version} : ajout de tag(s) sur l'image existante ${retag_from} -> ${tags_display}"
+          else
+            echo "[$i/$TOTAL] ${LOADER} ${mc_version} (loader ${loader_version}) -> ${tags_display}"
+          fi
 
-          if ! docker buildx build \
-              --platform linux/amd64,linux/arm64 \
-              -f "docker/${LOADER}/Dockerfile" \
-              "${tag_args[@]}" \
-              "${build_arg_args[@]}" \
-              --push \
-              .; then
-            echo "::error::Échec du build de ${LOADER} ${mc_version} (loader ${loader_version}). Arrêt : les versions suivantes ne seront pas construites."
-            echo "### ❌ Arrêt sur ${mc_version} (loader ${loader_version}) — $((i - 1))/${TOTAL} version(s) construite(s) avec succès avant l'échec." >> "$GITHUB_STEP_SUMMARY"
+          if build_one || { echo "::warning::Échec de ${LOADER} ${mc_version}, nouvel essai dans 60 s"; sleep 60; build_one; }; then
+            ok=$((ok + 1))
+          else
+            echo "::error::Échec du build de ${LOADER} ${mc_version} (loader ${loader_version}) après 2 essais."
             echo "--- espace disque au moment de l'échec ---"
             df -h / /var/lib/docker 2>/dev/null || true
             docker system df 2>/dev/null || true
-            exit 1
+            failed+=("${mc_version} (loader ${loader_version})")
+            if [ -n "$retag_from" ]; then retag_failed=1; fi
+            if [ "$CONTINUE_ON_ERROR" != "true" ]; then
+              echo "### ❌ Arrêt sur ${mc_version} (loader ${loader_version}) — ${ok}/${TOTAL} version(s) construite(s) avec succès avant l'échec." >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
           fi
 
-          # Les runners GitHub-hosted n'ont qu'environ 14 Go libres : sur un
-          # backfill de centaines de versions en multi-arch, le cache
-          # buildx (une image temporaire par version, peu réutilisable d'une
-          # version à l'autre hormis les couches de base JAVA_IMAGE/
-          # JAVA_RUNTIME_IMAGE) finit par saturer le disque et fait échouer
-          # un build arbitraire plus loin dans la liste (symptôme observé :
-          # échecs non reproductibles en local, à une version différente à
-          # chaque run). On purge donc le cache après chaque version tout en
-          # gardant les couches de base (--keep-storage) pour ne pas
-          # re-télécharger inutilement les images Java à chaque itération.
-          docker buildx prune -f --keep-storage 20GB >/dev/null 2>&1 || true
+          # Purge the buildx cache after each version. --keep-storage must stay
+          # well BELOW the runner's free space: the old value (20 GB, for
+          # ~14 GB free) never triggered the purge.
+          docker buildx prune -f --keep-storage 4GB >/dev/null 2>&1 || true
         done < /tmp/jobs.ndjson
 
+        if [ ${#failed[@]} -gt 0 ]; then
+          {
+            echo "### ⚠️ ${ok}/${TOTAL} version(s) construite(s) pour ${LOADER}, ${#failed[@]} en échec :"
+            for f in "${failed[@]}"; do echo "- ${f}"; done
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
         echo "### ✅ ${TOTAL} version(s) construite(s) avec succès pour ${LOADER}." >> "$GITHUB_STEP_SUMMARY"

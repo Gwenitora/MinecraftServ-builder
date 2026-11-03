@@ -2,7 +2,7 @@
 
 Images Docker prêtes à l'emploi pour héberger un serveur Minecraft, quel que
 soit le loader : **vanilla, bukkit, spigot, paper, forge, neoforge, fabric,
-quilt**. Toutes les versions officiellement publiées par chaque projet sont
+quilt**, ainsi que le proxy **velocity**. Toutes les versions officiellement publiées par chaque projet sont
 disponibles — releases, snapshots, et versions historiques/expérimentales —
 et les images sont reconstruites automatiquement chaque jour.
 
@@ -23,6 +23,7 @@ et les images sont reconstruites automatiquement chaque jour.
 | NeoForge   | `minecraftserv/neoforge`       | https://neoforged.net/ |
 | Fabric     | `minecraftserv/fabric`         | https://fabricmc.net/use/server/ |
 | Quilt      | `minecraftserv/quilt`          | https://quiltmc.org/en/install/server/ |
+| Velocity (proxy) | `minecraftserv/velocity` | https://papermc.io/software/velocity |
 
 ## Démarrage rapide
 
@@ -70,6 +71,17 @@ est **`_`** (underscore) — Docker n'autorise pas `:` dans un tag.
     `<profondeur>-snapshot` et `<profondeur>-experimental` existent aussi et
     pointent vers la snapshot/version expérimentale la plus proche de cette
     branche (ex: `1.21-snapshot`).
+  - Un tag de profondeur partielle (`1`, `1.21`…) n'est posé **que** sur la
+    release la plus haute de cette profondeur : la build de `1.20.1` ne
+    reçoit plus les tags `1` ni `1.20`, seule `1.20.6` reçoit `1.20`. Ainsi
+    un échec ou un ordre de build ne peut plus faire pointer `:1` vers une
+    vieille version.
+  - Quand une version porte le même nom qu'une profondeur qui a des versions
+    plus récentes (Minecraft `1.20` alors que `1.20.6` existe), son tag
+    exact devient `1.20.0` (`1.20.0_latest`, `1.20.0_<loader>`…). Le tag nu
+    `1.20` reste le tag de profondeur, qui suit toujours la dernière 1.20.x :
+    reconstruire la 1.20 (par exemple pour un nouveau build de loader) ne
+    peut plus le ramener en arrière.
 - **Version de loader précise** : ajoutez `_<version-loader>` à n'importe
   quel tag de version Minecraft pour figer une version de loader précise,
   par exemple `1.21.2_40.1.80` (NeoForge) ou `1.21.2_9.6.0` (Fabric). Sans ce
@@ -81,6 +93,32 @@ est **`_`** (underscore) — Docker n'autorise pas `:` dans un tag.
 - Pour `vanilla`, `bukkit` et `spigot`, il n'existe pas de version de loader
   séparée (le "loader" est la version du jeu elle-même), donc le suffixe
   `_<version-loader>` n'a pas d'effet utile.
+
+### Tags de Velocity (proxy)
+
+Velocity n'est pas lié à une version de Minecraft : un même build accepte
+toutes les versions clientes qu'il supporte. Ses tags reprennent donc le
+même système, mais avec la **version de Velocity** à la place de la version
+de Minecraft, et le **numéro de build** à la place de la version du loader :
+
+| Tag | Pointe vers |
+|-----|-------------|
+| `latest` (= `latest_latest`) | dernier build stable de la version Velocity la plus haute (aujourd'hui une `-SNAPSHOT`, c'est la ligne que PaperMC recommande) |
+| `latest_experimental` (= `experimental`) | dernier build non stable de cette version, s'il en existe |
+| `snapshot` (= `snapshot_latest`) | dernier build de la ligne de dev `-SNAPSHOT` la plus haute |
+| `3.4.0-SNAPSHOT` (= `3.4.0-SNAPSHOT_latest`) | dernier build stable de cette version |
+| `3.4.0-SNAPSHOT_523` | exactement ce build |
+| `3.4.0-SNAPSHOT_experimental` | dernier build non stable de cette version |
+| `3`, `3.4`, `3.4.0` (+ `-latest`) | version la plus haute de ce niveau ; une version finale passe devant sa `-SNAPSHOT` (`3.4.0` pointe vers `3.4.0-SNAPSHOT` tant que `3.4.0` finale n'existe pas) |
+
+Le port par défaut est `25577`, et la mémoire par défaut plus basse
+(`MIN_MEMORY=512M`, `MAX_MEMORY=1G`). La configuration se trouve dans
+`/app/velocity.toml` (créé au premier lancement) :
+https://docs.papermc.io/velocity/configuration
+
+```bash
+docker run -d --name proxy -p 25577:25577 -v proxy_data:/app minecraftserv/velocity:latest
+```
 
 ### Canaux (comment une version est classée)
 
@@ -139,28 +177,43 @@ partagent en grande partie `server.properties`/`bukkit.yml`) :
 ```
 docker/<loader>/Dockerfile        # une image par loader, tout est installé dans /app (via /opt/server-src)
 entrypoint/entrypoint.sh          # entrypoint commun: init /app si vide, accepte l'EULA, lance run.sh
-scripts/resolve_versions.py       # interroge les API officielles de chaque loader, calcule les tags, trie par ordre chronologique
-.github/actions/resolve-versions/ # action composite: calcule la matrix de build (triée chronologiquement) pour un loader
-.github/actions/build-loader/     # action composite: build + push TOUTES les versions de la matrix, une par une, dans l'ordre, arrêt au 1er échec
+scripts/resolve_versions.py       # interroge les API officielles de chaque loader, calcule les tags, trie les builds
+.github/actions/resolve-versions/ # action composite: calcule la matrix de build pour un loader
+.github/actions/build-loader/     # action composite: build + push TOUTES les versions de la matrix, une par une, 1 nouvel essai par version, sans arrêt au 1er échec
 .github/actions/reset-images/     # action composite: supprime tous les tags Docker Hub existants d'un loader (option "reset")
-.github/workflows/<loader>.yml    # déclenchement quotidien (cron) par loader, job unique séquentiel utilisant les actions ci-dessus
+.github/workflows/<loader>.yml    # déclenchement quotidien (cron, décalé entre loaders ; velocity à 1 h UTC) par loader, job unique séquentiel utilisant les actions ci-dessus
 .github/workflows/builds.yml       # déclenche manuellement un ou plusieurs workflows <loader>.yml
 ```
 
-### Ordre de build et arrêt au premier échec
+Les builds ne se lancent **jamais** sur un push ou un merge, quelle que soit
+la branche : uniquement via le cron quotidien de chaque loader ou un
+lancement manuel (`workflow_dispatch`, voir plus bas).
 
-Chaque workflow `<loader>.yml` construit **une seule image à la fois**, dans
-l'**ordre chronologique de sortie** des versions (de la plus ancienne à la
-plus récente), plutôt qu'en parallèle. Ceci est nécessaire pour que les tags
-"mouvants" par profondeur (`1.21-latest`, `1.21-snapshot`, etc.) soient
-toujours calculés/poussés dans le bon ordre les uns par rapport aux autres.
+### Ordre de build et gestion des échecs
+
+Chaque workflow `<loader>.yml` construit **une seule image à la fois**,
+plutôt qu'en parallèle. En mode `daily`, les versions qui portent un tag
+mouvant (`latest`, `snapshot`, `experimental`, et les tags de profondeur de
+la branche active comme `1`, `1.21`, `1.21-latest`…) passent **en premier**,
+puis les nouvelles versions dans l'ordre chronologique de sortie. En mode
+`backfill`, l'ordre reste chronologique.
 
 Si le build d'une version échoue (erreur Docker, téléchargement du jar,
-etc.), le job **s'arrête immédiatement** : les versions plus récentes ne
-sont **pas** construites lors de ce run (elles le seront au prochain
-déclenchement, une fois le problème résolu). Le résumé du run (onglet
-*Summary* du job GitHub Actions) indique à quelle version l'arrêt a eu lieu
-et combien de versions ont été construites avec succès avant.
+limite de pulls, etc.), il est **réessayé une fois** après 60 s. S'il échoue
+encore, la version est notée en échec et le job **continue** avec les
+suivantes : un vieux build cassé ne bloque plus `latest` ni les versions
+récentes. Le job est marqué en échec à la fin s'il reste au moins une
+version ratée, et le résumé du run (onglet *Summary*) liste ces versions.
+
+Le comportement historique (arrêt au premier échec) reste disponible via
+l'entrée `continue_on_error: "false"` de l'action `build-loader`.
+
+Pour tenir dans l'espace disque des runners GitHub (~14 Go libres), l'action
+libère d'abord ~25 Go (SDK .NET/Android/GHC/CodeQL inutiles ici) et purge le
+cache buildx après chaque version au-delà de 4 Go. Les images Java de base
+(`eclipse-temurin`) sont tirées depuis le miroir ECR Public des images
+officielles (`public.ecr.aws/docker/library`) pour ne pas consommer le quota
+de pulls Docker Hub.
 
 ### Option « reset » : repartir de zéro
 
@@ -183,8 +236,8 @@ veux d'abord supprimer tous les tags Docker Hub existants pour ces loaders,
 et lance. Ce workflow déclenche à sa place chaque `<loader>.yml`
 correspondant via l'API GitHub Actions (`gh workflow run`), donc chaque
 loader sélectionné tourne comme un run indépendant (visible séparément dans
-l'onglet Actions), et chacun construit ses versions une par une dans
-l'ordre chronologique (voir ci-dessous).
+l'onglet Actions), et chacun construit ses versions une par une (voir
+ci-dessus).
 
 ### Comment fonctionne la mise à jour quotidienne
 
@@ -193,13 +246,27 @@ Chaque jour, pour chaque loader :
    toutes les versions Minecraft + toutes les versions de loader associées.
 2. Le script compare avec les tags déjà présents sur Docker Hub et ne
    reconstruit que :
-   - les tags "mouvants" (`latest`, `snapshot`, `experimental`, et toutes
-     les variantes `-latest`/`-snapshot`/`-experimental` par profondeur),
-   - les versions jamais construites auparavant.
+   - les versions qui portent un tag "mouvant" : `latest`, `snapshot`,
+     `experimental`, et les tags de profondeur de la **branche active**
+     (ex: `1`, `1.21`, `1-latest`, `1.21-snapshot`). Une ancienne release
+     comme `1.12.2` ne porte plus que des tags qui ne bougent plus
+     (`1.12.2`, `1.12.2-latest`, `1.12`…) et n'est donc **pas** reconstruite
+     chaque jour ;
+   - les versions jamais construites auparavant, y compris une nouvelle
+     build de loader pour une version Minecraft existante (détectée via le
+     tag explicite `<mc>_<loader>`).
 3. Chaque version est construite **séquentiellement** (pas en parallèle) et
-   poussée avec tous ses tags sur `minecraftserv/<loader>`, dans l'ordre
-   chronologique de sortie. Si une version échoue, le run s'arrête et les
-   versions plus récentes ne sont pas traitées ce jour-là.
+   poussée avec tous ses tags sur `minecraftserv/<loader>`, tags mouvants
+   d'abord. Une version en échec n'empêche pas les suivantes (voir
+   « Ordre de build et gestion des échecs »).
+
+**Migration des tags `<mc>_<loader>`** : les images construites avant
+l'introduction de ces tags ne les ont pas. Tant que le tag repère
+`tag-scheme-v2` n'est pas publié sur Docker Hub, le premier daily ajoute ces
+tags sur les images existantes (`docker buildx imagetools create`, sans
+recompiler) au lieu de tout reconstruire. Seules les versions vraiment
+absentes sont compilées. Le tag `tag-scheme-v2` est ensuite porté par
+l'image `latest`, et la migration ne se relance plus jamais.
 
 > ⚠️ Un run GitHub Actions est limité à ~6h d'exécution (`timeout-minutes:
 > 350` dans chaque workflow). Un backfill complet de plusieurs centaines de
@@ -232,9 +299,9 @@ versions et les tags mouvants).
    New repository secret**, ajoutez :
    - `DOCKERHUB_USERNAME` = `minecraftserv`
    - `DOCKERHUB_TOKEN` = le token généré à l'étape 2
-4. Créez les 8 dépôts Docker Hub (`minecraftserv/vanilla`, `.../bukkit`,
+4. Créez les 9 dépôts Docker Hub (`minecraftserv/vanilla`, `.../bukkit`,
    `.../spigot`, `.../paper`, `.../forge`, `.../neoforge`, `.../fabric`,
-   `.../quilt`) — publics, sinon les `docker pull` anonymes échoueront.
+   `.../quilt`, `.../velocity`) — publics, sinon les `docker pull` anonymes échoueront.
 5. Les workflows tournent automatiquement chaque jour ; vous pouvez aussi
    les lancer manuellement depuis l'onglet **Actions** du dépôt
    (`workflow_dispatch`).
@@ -254,6 +321,9 @@ versions et les tags mouvants).
   retiré en Java 9+, ce qui plante le serveur au démarrage. Géré
   automatiquement par `resolve_versions.py` (indépendant de l'heuristique
   Java générale utilisée par les autres loaders).
+- **Minecraft 1.20.5 et 1.20.6** exigent Java 21 (comme toute la 1.21) ;
+  `resolve_versions.py` en tient compte (1.20.4 et antérieures restent en
+  Java 17).
 - Quilt n'expose pas d'endpoint "jar serveur fusionné" prêt à l'emploi
   (contrairement à Fabric) : l'image exécute l'installeur officiel Quilt
   (`quilt-installer ... install server <mc> <loader> --download-server`) au

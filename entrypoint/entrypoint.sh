@@ -1,13 +1,13 @@
 #!/bin/sh
-# Entrypoint commun à tous les loaders (vanilla, bukkit, spigot, paper,
-# forge, neoforge, fabric, quilt).
+# Entrypoint shared by every loader (vanilla, bukkit, spigot, paper,
+# forge, neoforge, fabric, quilt, velocity).
 #
-# Rôle:
-#  - rendre l'image "volume-safe": si /app est un volume monté vide (ou
-#    obsolète), on y recopie les fichiers embarqués dans l'image (/opt/server-src)
-#  - accepter automatiquement l'EULA Mojang (ACCEPT_EULA=true par défaut)
-#  - exposer les réglages mémoire/JVM classiques via variables d'environnement
-#  - lancer le serveur via le run.sh généré au build (spécifique au loader)
+# Role:
+#  - make the image "volume-safe": if /app is an empty (or outdated) mounted
+#    volume, copy the files baked into the image (/opt/server-src) into it
+#  - automatically accept the Mojang EULA (ACCEPT_EULA=true by default)
+#  - expose the usual memory/JVM settings through environment variables
+#  - start the server through the run.sh generated at build time (loader specific)
 set -e
 
 APP_DIR="/app"
