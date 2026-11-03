@@ -1,7 +1,7 @@
-# Image "paper" — https://papermc.io (fork optimisé de Spigot/CraftBukkit).
+# "paper" image: https://papermc.io (optimized fork of Spigot/CraftBukkit).
 #
-# Build args attendus (fournis par scripts/resolve_versions.py):
-#   JAVA_IMAGE, JAVA_RUNTIME_IMAGE, MC_VERSION, LOADER_VERSION (= build Paper), JAR_URL
+# Expected build args (provided by scripts/resolve_versions.py):
+#   JAVA_IMAGE, JAVA_RUNTIME_IMAGE, MC_VERSION, LOADER_VERSION (= Paper build), JAR_URL
 ARG JAVA_IMAGE=eclipse-temurin:21-jdk-jammy
 ARG JAVA_RUNTIME_IMAGE=eclipse-temurin:21-jre-jammy
 

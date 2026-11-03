@@ -1,26 +1,25 @@
 #!/usr/bin/env python3
 """
-Resolveur de versions pour MinecraftServ-builder.
+Version resolver for MinecraftServ-builder.
 
-Interroge les API officielles de chaque loader et produit une liste de
-"jobs" de build pour GitHub Actions (matrix), avec les tags Docker
-associés.
+Queries the official API of each loader and produces a list of build
+"jobs" for GitHub Actions (matrix), with the associated Docker tags.
 
 Usage:
     python resolve_versions.py --loader paper --mode daily  > matrix.json
     python resolve_versions.py --loader forge --mode backfill --limit 200 > matrix.json
 
 Modes:
-    daily     -> ne renvoie que les versions "mouvantes" utiles à rafraichir
-                 chaque jour (latest / snapshot / experimental de chaque
-                 profondeur) + les versions MC jamais vues auparavant
-                 (comparées à --state-file, un simple fichier texte listant
-                 les tags déjà publiés).
-    backfill  -> renvoie TOUTES les versions connues du loader (utile pour
-                 le job manuel "backfill-all" qui reconstruit l'historique
-                 complet, exécuté par petits lots via --limit/--offset).
+    daily     -> only returns what needs refreshing every day: jobs carrying
+                 a moving tag (latest / snapshot / experimental and the depth
+                 tags of the active branch) + every tag never published
+                 before (compared against --state-file, a plain text file
+                 listing the already published tags).
+    backfill  -> returns EVERY known version of the loader (used by the
+                 manual backfill run that rebuilds the full history, in
+                 small batches via --limit/--offset).
 
-Séparateur version-loader dans les tags: "_" (ex: 1.21.2_40.1.80)
+Separator between version and loader in tags: "_" (e.g. 1.21.2_40.1.80)
 """
 import argparse
 import datetime
@@ -47,25 +46,25 @@ def http_text(url):
 
 
 def url_segment(s):
-    """Encode un segment de chemin d'URL (ex: 'id' de version Minecraft
-    interpolé dans un template). Certains identifiants Mojang/loader
-    contiennent des espaces ("1.14 Pre-Release 1") ou d'autres caractères
-    invalides dans une URL/requête HTTP brute (curl les rejette avec
-    "Malformed input to a URL function")."""
+    """Encodes a URL path segment (e.g. a Minecraft version 'id'
+    interpolated into a template). Some Mojang/loader identifiers contain
+    spaces ("1.14 Pre-Release 1") or other characters that are invalid in a
+    raw URL/HTTP request (curl rejects them with "Malformed input to a URL
+    function")."""
     return urllib.parse.quote(s, safe="")
 
 
 # ---------------------------------------------------------------------------
-# Classification générique
+# Generic classification
 # ---------------------------------------------------------------------------
 
 def mc_channel_from_type(t):
-    """Mappe le type Mojang vers un des 3 canaux exposés en tag Docker."""
+    """Maps the Mojang type to one of the 3 channels exposed as Docker tags."""
     if t == "release":
         return "latest"
     if t == "snapshot":
         return "snapshot"
-    # old_beta / old_alpha -> versions historiques/expérimentales de MC
+    # old_beta / old_alpha -> historical/experimental MC versions
     return "experimental"
 
 
@@ -77,11 +76,11 @@ def loader_channel_from_string(v):
 
 
 def sanitize_tag(tag):
-    """Un tag Docker n'autorise que [A-Za-z0-9_.-] et doit commencer par un
-    alphanumérique/underscore. Certains identifiants de version (ex: Mojang
-    "1.14 Pre-Release 1", "3D Shareware v1.34") contiennent des espaces ou
-    d'autres caractères invalides : on les remplace plutôt que de laisser
-    `docker buildx build -t ...` planter sur un tag malformé."""
+    """A Docker tag only allows [A-Za-z0-9_.-] and must start with an
+    alphanumeric character or an underscore. Some version identifiers (e.g.
+    Mojang "1.14 Pre-Release 1", "3D Shareware v1.34") contain spaces or
+    other invalid characters: they are replaced rather than letting
+    `docker buildx build -t ...` fail on a malformed tag."""
     t = re.sub(r"[^A-Za-z0-9_.-]", "-", tag)
     if not re.match(r"^[A-Za-z0-9_]", t):
         t = "v" + t
@@ -89,8 +88,8 @@ def sanitize_tag(tag):
 
 
 def _mc_version_tuple(mc_version):
-    """Parse le préfixe numérique pointé d'une version MC ("1.5.2" -> (1,5,2)).
-    Retourne None si non parsable (snapshots/alias non numériques)."""
+    """Parses the dotted numeric prefix of an MC version ("1.5.2" -> (1,5,2)).
+    Returns None if it cannot be parsed (snapshots/non-numeric aliases)."""
     parts = []
     for p in mc_version.split("."):
         if not p.isdigit():
@@ -101,7 +100,7 @@ def _mc_version_tuple(mc_version):
 
 def depth_tags(mc_version):
     """1.21.2 -> ['1', '1.21', '1.21.2'] ; 26.3 -> ['26', '26.3']
-    Ignoré si une partie n'est pas purement numérique (pre/rc/snapshots)."""
+    Skipped if a part is not purely numeric (pre/rc/snapshots)."""
     parts = mc_version.split(".")
     if not all(p.isdigit() for p in parts):
         return []
@@ -112,21 +111,21 @@ def depth_tags(mc_version):
 
 
 def java_for_mc(mc_version):
-    """Heuristique Java requise selon la version MC (releases modernes)."""
+    """Heuristic for the Java version required by an MC version (modern releases)."""
     parts = re.findall(r"\d+", mc_version)
     nums = [int(p) for p in parts[:3]] if parts else []
     if not nums:
         return "21"
     major = nums[0]
     minor = nums[1] if len(nums) > 1 else 0
-    # nouveau schéma calendaire (>= 20.x hors "1.x") -> Java 21
+    # new calendar scheme (>= 20.x, not "1.x") -> Java 21
     if major >= 20 and major != 1:
         return "21"
     if major == 1:
         if minor >= 21:
             return "21"
-        # 1.20.5 et 1.20.6 exigent Java 21 (class file version 65) :
-        # avec Java 17 le serveur plante au démarrage.
+        # 1.20.5 and 1.20.6 require Java 21 (class file version 65):
+        # with Java 17 the server crashes on startup.
         patch = nums[2] if len(nums) > 2 else 0
         if minor == 20 and patch >= 5:
             return "21"
@@ -141,18 +140,18 @@ def java_for_mc(mc_version):
 
 
 def version_sort_key(v):
-    """Clé de tri approximative basée sur les nombres présents dans la
-    chaîne de version (ex: '1.21.2' -> (1, 21, 2, 0, 0, 0)). Sert de repli
-    quand aucune date de publication réelle n'est disponible."""
+    """Approximate sort key based on the numbers found in the version
+    string (e.g. '1.21.2' -> (1, 21, 2, 0, 0, 0)). Used as a fallback when
+    no real release date is available."""
     nums = [int(x) for x in re.findall(r"\d+", v)]
     nums = (nums + [0] * 6)[:6]
     return tuple(nums)
 
 
 def entry_sort_key(e):
-    """Clé de tri chronologique d'une entrée (mc_version). Utilise la date
-    de sortie réelle quand elle est connue (vanilla, via Mojang), sinon
-    l'ordre naturel des numéros de version."""
+    """Chronological sort key of an entry (mc_version). Uses the real
+    release date when known (vanilla, via Mojang), otherwise the natural
+    order of the version numbers."""
     rt = e.get("release_time")
     ts = 0.0
     if rt:
@@ -168,17 +167,17 @@ def job_sort_key(e, loader_id):
 
 
 # ---------------------------------------------------------------------------
-# Providers: chacun retourne une liste de
+# Providers: each one returns a list of
 # {mc_version, mc_channel, java, loaders: [{id, channel, build_args}]}
 # ---------------------------------------------------------------------------
 
-# Avant la 1.2.5 (29/03/2012), le manifeste Mojang ne publie aucun jar
-# serveur dédié (champ "downloads.server" absent) : tout old_alpha, tout
-# old_beta, et les releases 1.0 à 1.2.4 n'ont qu'un client. Vérifié
-# exhaustivement sur les 35 versions old_alpha + les releases 1.0-1.2.4 : le
-# champ est systématiquement absent avant, systématiquement présent à partir
-# de 1.2.5. On exclut donc ces versions plutôt que de planter le build (le
-# Dockerfile ferait échouer un `curl` sur une URL "null").
+# Before 1.2.5 (2012-03-29), the Mojang manifest publishes no dedicated
+# server jar ("downloads.server" field missing): every old_alpha, every
+# old_beta, and the 1.0 to 1.2.4 releases only have a client. Checked
+# exhaustively on the 35 old_alpha versions + the 1.0-1.2.4 releases: the
+# field is always missing before, always present from 1.2.5 on. These
+# versions are therefore excluded rather than failing the build (the
+# Dockerfile would fail a `curl` on a "null" URL).
 VANILLA_MIN_RELEASE_TIME = "2012-03-29T22:00:00+00:00"
 
 
@@ -215,16 +214,16 @@ def _spigot_bukkit_versions():
     return sorted({i for i in ids if i != "latest"})
 
 
-# "1.8" et "1.8.3" dépendent (via spigot-api) de
-# net.md-5:bungeecord-chat:1.8-SNAPSHOT. Ce snapshot n'a jamais été promu en
-# release et a depuis été purgé de tous les dépôts Sonatype/mirrors connus
-# (oss.sonatype.org, hub.spigotmc.org, repo.phoenix616.dev... tous en 404) :
-# la résolution Maven échoue donc définitivement. "1.8.4" à "1.8.8"
-# partagent le même BuildData (build "582b", vérifié via
-# hub.spigotmc.org/versions/<v>.json) et compilent sans problème (testé:
-# 1.8.4 et 1.8.8) ; seules "1.8" (build legacy) et "1.8.3" (build "422") ont
-# un pin différent et cassé. CraftBukkit (bukkit), qui ne dépend pas de
-# bungeecord-chat, n'est pas affecté.
+# "1.8" and "1.8.3" depend (through spigot-api) on
+# net.md-5:bungeecord-chat:1.8-SNAPSHOT. That snapshot was never promoted to
+# a release and has since been purged from every known Sonatype repository
+# and mirror (oss.sonatype.org, hub.spigotmc.org, repo.phoenix616.dev... all
+# 404): Maven resolution therefore fails for good. "1.8.4" to "1.8.8" share
+# the same BuildData (build "582b", checked via
+# hub.spigotmc.org/versions/<v>.json) and compile fine (tested: 1.8.4 and
+# 1.8.8); only "1.8" (legacy build) and "1.8.3" (build "422") have a
+# different, broken pin. CraftBukkit (bukkit), which does not depend on
+# bungeecord-chat, is not affected.
 SPIGOT_BROKEN_VERSIONS = {"1.8", "1.8.3"}
 
 
@@ -279,15 +278,15 @@ def provider_forge():
     )
 
 
-# "20.4.0-beta" embarque un installeur dont la vérification de connectivité
-# réseau (net.minecraftforge.installer.SimpleInstaller.getIps) interroge
-# entre autres "authserver.mojang.com" ; ce nom a un CNAME vers une
-# distribution CloudFront aujourd'hui supprimée (NXDOMAIN confirmé), donc la
-# vérification échoue toujours et l'installeur plante avec un
-# NullPointerException avant même de démarrer l'installation. Toutes les
-# autres versions testées autour (20.2.3-beta, 20.3.1-beta, 20.5.0-beta,
-# 20.6.1-beta, 20.4.167, 21.0.0-beta) construisent sans problème : c'est un
-# artefact isolé et définitivement cassé en amont, pas un bug de notre côté.
+# "20.4.0-beta" ships an installer whose network connectivity check
+# (net.minecraftforge.installer.SimpleInstaller.getIps) queries, among
+# others, "authserver.mojang.com"; that name has a CNAME pointing to a
+# CloudFront distribution that has since been deleted (NXDOMAIN confirmed),
+# so the check always fails and the installer crashes with a
+# NullPointerException before the installation even starts. Every other
+# version tested around it (20.2.3-beta, 20.3.1-beta, 20.5.0-beta,
+# 20.6.1-beta, 20.4.167, 21.0.0-beta) builds fine: it is an isolated
+# artifact, permanently broken upstream, not a bug on our side.
 NEOFORGE_BROKEN_VERSIONS = {"20.4.0-beta"}
 
 
@@ -311,31 +310,31 @@ def provider_neoforge():
     return list(out.values())
 
 
-# Avant MC 1.5.2, Forge ne publiait pas de "-installer.jar" mais des
-# "-server.zip"/"-client.zip" (format legacy, binaire patché différemment).
-# Ces versions ne peuvent pas être construites par notre Dockerfile actuel
-# (basé sur l'installeur) et sont donc explicitement exclues plutôt que de
-# planter le build. Vérifié: 1.5.2-7.8.0.684 est la 1ère build avec un
-# installer.jar (200), tout ce qui est strictement avant 1.5.2 renvoie 404.
+# Before MC 1.5.2, Forge did not publish an "-installer.jar" but
+# "-server.zip"/"-client.zip" files (legacy format, binary patched
+# differently). Those versions cannot be built by our current Dockerfile
+# (installer based) and are therefore explicitly excluded rather than
+# failing the build. Checked: 1.5.2-7.8.0.684 is the first build with an
+# installer.jar (200), everything strictly before 1.5.2 returns 404.
 #
-# MC 1.5.2 elle-même est en plus exclue : son FML ("relauncher") télécharge
-# au 1er lancement des libs (argo, guava, scala-library, deobfuscation
-# data...) depuis http://files.minecraftforge.net/fmllibs/, un hôte
-# définitivement mort (404 confirmé) — le serveur ne peut donc jamais
-# démarrer, même si le build Docker réussit. À partir de 1.6.x ces libs sont
-# embarquées directement (testé/validé en local sur 1.6.1/1.6.2/1.6.4).
+# MC 1.5.2 itself is excluded as well: on first launch its FML
+# ("relauncher") downloads libraries (argo, guava, scala-library,
+# deobfuscation data...) from http://files.minecraftforge.net/fmllibs/, a
+# host that is permanently dead (404 confirmed): the server can never start,
+# even if the Docker build succeeds. From 1.6.x on, those libraries are
+# bundled directly (tested/validated locally on 1.6.1/1.6.2/1.6.4).
 MIN_FORGE_INSTALLER_MC = (1, 6, 0)
 
 
-# Avant 1.13, Forge utilise l'ancien "FML/launchwrapper" qui repose sur un
-# cast explicite vers java.net.URLClassLoader (system classloader). Retiré
-# en Java 9+ (remplacé par un classloader interne non castable), ce qui
-# plante le serveur au démarrage avec un ClassCastException, même si le
-# build Docker réussit (vérifié en local sur 1.12.2 avec Java 11 : crash
-# immédiat "AppClassLoader cannot be cast to URLClassLoader"). On force donc
-# Java 8 pour toutes ces versions, indépendamment de l'heuristique générale
-# `java_for_mc` (qui elle vaut pour Vanilla/Bukkit/Spigot, pas affectés par
-# ce problème spécifique à l'ancien launcher Forge).
+# Before 1.13, Forge uses the old "FML/launchwrapper", which relies on an
+# explicit cast to java.net.URLClassLoader (system classloader). That was
+# removed in Java 9+ (replaced by an internal, non-castable classloader),
+# which crashes the server on startup with a ClassCastException, even if the
+# Docker build succeeds (checked locally on 1.12.2 with Java 11: immediate
+# crash "AppClassLoader cannot be cast to URLClassLoader"). Java 8 is
+# therefore forced for all those versions, independently of the general
+# `java_for_mc` heuristic (which applies to Vanilla/Bukkit/Spigot, not
+# affected by this issue specific to the old Forge launcher).
 FORGE_LEGACY_LAUNCHER_MAX_MC = (1, 13, 0)
 
 
@@ -361,8 +360,8 @@ def _provider_forge_like(metadata_url, installer_url_tpl):
 
 
 def provider_fabric():
-    """Fabric expose un endpoint officiel qui fournit directement le jar
-    serveur fusionné (loader + mappings intermédiaires), vérifié fonctionnel."""
+    """Fabric exposes an official endpoint that directly serves the merged
+    server jar (loader + intermediary mappings), verified to work."""
     game_url = "https://meta.fabricmc.net/v2/versions/game"
     loader_url = "https://meta.fabricmc.net/v2/versions/loader"
     installer_url = "https://meta.fabricmc.net/v2/versions/installer"
@@ -388,13 +387,13 @@ def provider_fabric():
 
 
 def provider_quilt():
-    """Quilt n'expose PAS d'endpoint "server/jar" prêt à l'emploi (contrairement
-    à Fabric) : il faut exécuter le quilt-installer au moment du build, qui
-    télécharge lui-même le serveur vanilla et merge le loader
-    (cf. docker/quilt/Dockerfile). On fournit donc juste l'URL de
-    l'installeur ; MC_VERSION/LOADER_VERSION sont déjà passés par ailleurs.
-    Les entrées du loader n'ont pas de champ "stable" exploitable dans cette
-    API (contrairement à Fabric) : on déduit le canal du nom de version."""
+    """Unlike Fabric, Quilt does NOT expose a ready-to-use "server/jar"
+    endpoint: the quilt-installer has to run at build time, and it downloads
+    the vanilla server itself and merges the loader (see
+    docker/quilt/Dockerfile). We therefore only provide the installer URL;
+    MC_VERSION/LOADER_VERSION are already passed separately.
+    The loader entries of this API have no usable "stable" field (unlike
+    Fabric): the channel is derived from the version name."""
     games = http_json("https://meta.quiltmc.org/v3/versions/game")
     loaders = http_json("https://meta.quiltmc.org/v3/versions/loader")
     installers = http_json("https://meta.quiltmc.org/v3/versions/installer")
@@ -418,12 +417,12 @@ def provider_quilt():
 
 
 # ---------------------------------------------------------------------------
-# Velocity (proxy PaperMC) : versionné indépendamment de Minecraft
+# Velocity (PaperMC proxy): versioned independently from Minecraft
 # ---------------------------------------------------------------------------
 
 def _velocity_order(v):
-    """Ordre des versions Velocity : "3.4.0-SNAPSHOT" < "3.4.0" < "3.4.1-SNAPSHOT".
-    Retourne (tuple numérique, 0 si -SNAPSHOT sinon 1) ou None si non parsable."""
+    """Velocity version order: "3.4.0-SNAPSHOT" < "3.4.0" < "3.4.1-SNAPSHOT".
+    Returns (numeric tuple, 0 if -SNAPSHOT else 1), or None if unparsable."""
     base = v[: -len("-SNAPSHOT")] if v.endswith("-SNAPSHOT") else v
     tup = _mc_version_tuple(base)
     if tup is None:
@@ -432,10 +431,10 @@ def _velocity_order(v):
 
 
 def provider_velocity():
-    """Même API Fill v3 que Paper. Velocity est compatible avec toutes les
-    versions clientes de Minecraft qu'il supporte : il n'a PAS de version MC.
-    Le champ "mc_version" des entrées contient donc la version de Velocity
-    (ex: "3.4.0-SNAPSHOT") et les "loaders" sont ses builds."""
+    """Same Fill v3 API as Paper. Velocity is compatible with every
+    Minecraft client version it supports: it has NO MC version. The
+    "mc_version" field of the entries therefore holds the Velocity version
+    (e.g. "3.4.0-SNAPSHOT") and the "loaders" are its builds."""
     data = http_json("https://fill.papermc.io/v3/projects/velocity")
     out = []
     for family, versions in data["versions"].items():
@@ -451,8 +450,8 @@ def provider_velocity():
                 lch = "latest" if b.get("channel", "STABLE").upper() in ("STABLE", "RECOMMENDED") else "experimental"
                 loaders.append({"id": str(b["id"]), "channel": lch, "build_args": {"JAR_URL": dl["url"]}})
             if loaders:
-                # Java 21 pour toutes les versions : obligatoire pour les
-                # builds récents, et rétrocompatible pour les anciens.
+                # Java 21 for every version: required by recent builds, and
+                # backward compatible with older ones.
                 out.append({"mc_version": v, "mc_channel": "snapshot" if v.endswith("-SNAPSHOT") else "latest",
                             "java": "21", "loaders": loaders})
     return out
@@ -473,21 +472,21 @@ PROVIDERS = {
 
 
 # ---------------------------------------------------------------------------
-# Construction des tags + jobs de build
+# Tags + build jobs
 # ---------------------------------------------------------------------------
 
 def pick_default_loader(loaders, channel):
-    """Loader 'par défaut' d'un canal donné = le plus récent de ce canal,
-    sinon le plus récent tout court (fallback)."""
+    """'Default' loader of a given channel = the most recent one of that
+    channel, otherwise the most recent one overall (fallback)."""
     cand = [l for l in loaders if l["channel"] == channel]
     pool = cand or loaders
     return pool[0] if pool else None
 
 
 def pick_loader_strict(loaders, channel):
-    """Comme pick_default_loader mais sans fallback: None si le canal
-    demandé n'existe pas réellement pour ce loader (ex: pas de build
-    'experimental' publié pour une version de Minecraft donnée)."""
+    """Like pick_default_loader but without fallback: None if the requested
+    channel does not actually exist for this loader (e.g. no 'experimental'
+    build published for a given Minecraft version)."""
     cand = [l for l in loaders if l["channel"] == channel]
     return cand[0] if cand else None
 
@@ -497,17 +496,17 @@ MOVING_SUFFIXES = ("-latest", "-snapshot", "-experimental")
 
 
 def is_moving_job(j, live_depths):
-    """Vrai si le job porte un tag mouvant, c.-à-d. un tag qui doit être
-    republié chaque jour pour suivre la dernière version : tags globaux
-    (latest, snapshot, experimental, latest_*...) et tags de profondeur
-    partielle de la branche ACTIVE (live_depths = profondeurs de la dernière
-    release, ex. "1", "1.21" : "1-latest", "1.21", "1.21-snapshot"...).
-    Les profondeurs des branches terminées ("1.4", "1.12"...) ne bougent plus :
-    elles ne sont republiées que si un de leurs tags manque (ou en backfill).
-    "<mc>-latest" (profondeur complète, ex. "1.4.6-latest") n'est PAS
-    mouvant : il désigne toujours la même version de Minecraft. Les nouvelles
-    versions de loader pour une version MC sont détectées via le tag
-    explicite "<mc>_<loader>" (absent de known_tags tant qu'il n'est pas publié)."""
+    """True if the job carries a moving tag, i.e. a tag that must be
+    republished every day to follow the latest version: global tags
+    (latest, snapshot, experimental, latest_*...) and partial depth tags of
+    the ACTIVE branch (live_depths = depths of the latest release, e.g. "1",
+    "1.21": "1-latest", "1.21", "1.21-snapshot"...).
+    Depths of finished branches ("1.4", "1.12"...) no longer move: they are
+    only republished if one of their tags is missing (or in backfill).
+    "<mc>-latest" (full depth, e.g. "1.4.6-latest") is NOT moving: it always
+    designates the same Minecraft version. New loader versions for an MC
+    version are detected through the explicit "<mc>_<loader>" tag (missing
+    from known_tags until it is published)."""
     for t in j["tags"]:
         if t in MOVING_GLOBAL or t.startswith(tuple(f"{g}{SEP}" for g in MOVING_GLOBAL)):
             return True
@@ -521,17 +520,16 @@ def is_moving_job(j, live_depths):
 
 
 def build_jobs(loader_name, entries, mode, known_tags):
-    """entries: sortie d'un provider. Retourne une liste de jobs matrix,
-    triée par ordre chronologique d'apparition (plus ancien -> plus récent)."""
-    # index par mc_version pour calculer les tags de profondeur "-snapshot"/"-experimental"
+    """entries: output of a provider. Returns a list of matrix jobs, sorted
+    in chronological order of appearance (oldest -> newest); in daily mode,
+    jobs carrying a moving tag come first."""
+    # index by channel, to compute the "-snapshot"/"-experimental" depth tags
     by_channel = {"latest": [], "snapshot": [], "experimental": []}
     for e in entries:
         by_channel[e["mc_channel"]].append(e)
     for v in by_channel.values():
         v.sort(key=entry_sort_key, reverse=True)
 
-    # dernière version release connue par profondeur, pour rattacher les
-    # tags -snapshot/-experimental d'une profondeur donnée à la même branche
     jobs = {}
 
     def add_job(mc_version, loader_id, java, tags, build_args, sort_key):
@@ -542,12 +540,12 @@ def build_jobs(loader_name, entries, mode, known_tags):
         })
         j["tags"].update(tags)
 
-    # propriétaire de chaque tag de profondeur ("1", "1.20", "1.20.6") : la
-    # release la plus haute de cette profondeur. Sans ça, CHAQUE release
-    # recevait "1"/"1-latest"/"1.x"/"1.x-latest" : (a) le filtre daily
-    # gardait toutes les releases (tags en "-latest") et reconstruisait tout
-    # l'historique chaque jour, (b) un run interrompu laissait ":1" pointer
-    # vers une version ancienne (dernière version poussée avant l'échec).
+    # owner of each depth tag ("1", "1.20", "1.20.6"): the highest release
+    # of that depth. Without this, EVERY release received
+    # "1"/"1-latest"/"1.x"/"1.x-latest": (a) the daily filter kept every
+    # release (because of the "-latest" tags) and rebuilt the whole history
+    # every day, (b) an interrupted run left ":1" pointing to an old version
+    # (the last version pushed before the failure).
     depth_owner = {}
     for e in by_channel["latest"]:
         tup = _mc_version_tuple(e["mc_version"])
@@ -570,13 +568,13 @@ def build_jobs(loader_name, entries, mode, known_tags):
         if not default_loader:
             continue
 
-        # --- tag exact sans version de loader précisée = loader latest de cette mc version
+        # --- exact tag without a loader version = latest loader for this mc version
         tags = {mc}
-        # --- profondeurs (seulement pour les mc versions numériques pures, canal release)
+        # --- depths (only for purely numeric mc versions, release channel)
         depths = depth_tags(mc) if e["mc_channel"] == "latest" else []
-        # le tag exact (profondeur complète) reste toujours sur sa version ;
-        # les profondeurs partielles ("1", "1.20") et tous les "-latest" ne
-        # vont qu'à la release la plus haute de la profondeur.
+        # the exact tag (full depth) always stays on its own version;
+        # partial depths ("1", "1.20") and every "-latest" only go to the
+        # highest release of the depth.
         depths = [d for d in depths if depth_owner.get(d, (None, None))[1] == mc]
         for d in depths:
             tags.add(d)
@@ -584,32 +582,32 @@ def build_jobs(loader_name, entries, mode, known_tags):
 
         add_job(mc, default_loader["id"], e["java"], tags, default_loader["build_args"], job_sort_key(e, default_loader["id"]))
 
-        # --- mots-clés de canal côté loader: "<mc>_latest" (alias du tag nu)
-        # et "<mc>_experimental" quand un build expérimental du loader existe
-        # réellement pour cette version de Minecraft.
+        # --- loader-side channel keywords: "<mc>_latest" (alias of the bare
+        # tag) and "<mc>_experimental" when an experimental loader build
+        # actually exists for this Minecraft version.
         add_job(mc, default_loader["id"], e["java"], {f"{mc}{SEP}latest"}, default_loader["build_args"], job_sort_key(e, default_loader["id"]))
-        # tag explicite "<mc>_<loader>" sur le loader par défaut (sauf vanilla,
-        # où loader == version MC) : c'est lui qui fait reconstruire en daily
-        # quand un nouveau build de loader sort pour une version MC existante.
+        # explicit "<mc>_<loader>" tag on the default loader (except vanilla,
+        # where loader == MC version): this is what triggers a daily rebuild
+        # when a new loader build comes out for an existing MC version.
         if loader_name != "vanilla" and default_loader["id"] != mc:
             add_job(mc, default_loader["id"], e["java"], {f"{mc}{SEP}{default_loader['id']}"}, default_loader["build_args"], job_sort_key(e, default_loader["id"]))
         exp_keyword_loader = pick_loader_strict(loaders, "experimental")
         if exp_keyword_loader:
             add_job(mc, exp_keyword_loader["id"], e["java"], {f"{mc}{SEP}experimental"}, exp_keyword_loader["build_args"], job_sort_key(e, exp_keyword_loader["id"]))
 
-        # --- variantes explicites de version de loader: mc_loader
+        # --- explicit loader version variants: mc_loader
         if mode == "backfill":
             for l in loaders:
                 if l is default_loader:
                     continue
                 add_job(mc, l["id"], e["java"], {f"{mc}{SEP}{l['id']}"}, l["build_args"], job_sort_key(e, l["id"]))
-        # en mode daily on limite aux loaders "latest"/"experimental" les plus récents
+        # in daily mode, limited to the most recent "latest"/"experimental" loaders
         elif mode == "daily":
             exp_loader = pick_default_loader(loaders, "experimental")
             if exp_loader and exp_loader is not default_loader:
                 add_job(mc, exp_loader["id"], e["java"], {f"{mc}{SEP}{exp_loader['id']}"}, exp_loader["build_args"], job_sort_key(e, exp_loader["id"]))
 
-    # --- tags globaux mouvants: latest / snapshot / experimental
+    # --- moving global tags: latest / snapshot / experimental
     if global_latest_mc:
         e = global_latest_mc
         dl = pick_default_loader(e["loaders"], "latest")
@@ -632,9 +630,9 @@ def build_jobs(loader_name, entries, mode, known_tags):
         if dl:
             add_job(e["mc_version"], dl["id"], e["java"], {"experimental", f"experimental{SEP}latest"}, dl["build_args"], job_sort_key(e, dl["id"]))
 
-    # --- tags de profondeur -snapshot / -experimental: on rattache la
-    # dernière version snapshot/experimental connue à chaque profondeur de la
-    # dernière release (best-effort, cf. README pour les limites de cette heuristique)
+    # --- -snapshot / -experimental depth tags: the latest known
+    # snapshot/experimental version is attached to every depth of the
+    # latest release (best effort, see the README for the limits of this heuristic)
     if global_latest_mc:
         depths = depth_tags(global_latest_mc["mc_version"])
         if global_snapshot_mc:
@@ -653,21 +651,20 @@ def build_jobs(loader_name, entries, mode, known_tags):
         j["tags"] = {sanitize_tag(t) for t in j["tags"]}
 
     if mode == "daily":
-        # ne garde que les jobs touchant au moins un tag encore jamais publié,
-        # ou un tag mouvant (toujours republié pour rester à jour)
+        # only keep jobs that touch at least one never-published tag, or a
+        # moving tag (always republished to stay up to date)
         filtered = []
         for j in result:
             if is_moving_job(j, live_depths) or any(t not in known_tags for t in j["tags"]):
                 filtered.append(j)
         result = filtered
 
-    # ordre chronologique d'apparition (plus ancien -> plus récent) : essentiel
-    # pour un build séquentiel où un échec doit arrêter les versions suivantes.
+    # chronological order of appearance (oldest -> newest)
     result.sort(key=lambda j: j["_sort_key"])
     if mode == "daily":
-        # en daily, les jobs portant un tag mouvant (latest, profondeurs,
-        # snapshot...) passent en premier : un échec plus loin dans la liste
-        # ne doit pas empêcher de rafraîchir ce que les utilisateurs tirent.
+        # in daily mode, jobs carrying a moving tag (latest, depths,
+        # snapshot...) come first: a failure further down the list must not
+        # prevent refreshing what users actually pull.
         result.sort(key=lambda j: 0 if is_moving_job(j, live_depths) else 1)
     for j in result:
         j.pop("_sort_key", None)
@@ -676,17 +673,17 @@ def build_jobs(loader_name, entries, mode, known_tags):
 
 
 def build_jobs_velocity(entries, mode, known_tags):
-    """Tags Velocity (aucune version de Minecraft dans les tags) :
-      latest / latest_latest      -> dernier build stable de la version la plus haute
-      latest_experimental         -> dernier build non stable de cette version (si existe)
-      snapshot / snapshot_latest  -> dernière ligne de dev "-SNAPSHOT" (souvent = latest)
-      experimental                -> alias de latest_experimental
-      <v> / <v>_latest            -> dernier build stable de la version <v> (ex: 3.4.0-SNAPSHOT)
-      <v>_experimental            -> dernier build non stable de <v>
-      <v>_<build>                 -> build exact (ex: 3.4.0-SNAPSHOT_523)
-      <d> / <d>-latest            -> profondeurs "3", "3.4", "3.4.0" : version la plus haute
-                                     du niveau, une release finale passant devant
-                                     sa -SNAPSHOT (3.4.0 > 3.4.0-SNAPSHOT)."""
+    """Velocity tags (no Minecraft version in the tags):
+      latest / latest_latest      -> latest stable build of the highest version
+      latest_experimental         -> latest non-stable build of that version (if any)
+      snapshot / snapshot_latest  -> latest "-SNAPSHOT" dev line (often = latest)
+      experimental                -> alias of latest_experimental
+      <v> / <v>_latest            -> latest stable build of version <v> (e.g. 3.4.0-SNAPSHOT)
+      <v>_experimental            -> latest non-stable build of <v>
+      <v>_<build>                 -> exact build (e.g. 3.4.0-SNAPSHOT_523)
+      <d> / <d>-latest            -> depths "3", "3.4", "3.4.0": highest version of
+                                     that level, a final release ranking above its
+                                     -SNAPSHOT (3.4.0 > 3.4.0-SNAPSHOT)."""
     jobs = {}
 
     def add_job(v, l, tags):
@@ -701,7 +698,7 @@ def build_jobs_velocity(entries, mode, known_tags):
         return []
 
     depth_owner = {}
-    for e in entries:  # du plus haut au plus bas : le 1er vu gagne
+    for e in entries:  # from highest to lowest: the first one seen wins
         base = e["mc_version"].removesuffix("-SNAPSHOT")
         for d in depth_tags(base):
             depth_owner.setdefault(d, e["mc_version"])
@@ -750,8 +747,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--loader", required=True, choices=PROVIDERS.keys())
     ap.add_argument("--mode", default="daily", choices=["daily", "backfill"])
-    ap.add_argument("--state-file", default=None, help="fichier texte listant les tags déjà publiés (1 par ligne)")
-    ap.add_argument("--limit", type=int, default=None, help="limite le nombre de jobs renvoyés (pagination backfill)")
+    ap.add_argument("--state-file", default=None, help="text file listing the already published tags (one per line)")
+    ap.add_argument("--limit", type=int, default=None, help="limits the number of returned jobs (backfill pagination)")
     ap.add_argument("--offset", type=int, default=0)
     args = ap.parse_args()
 

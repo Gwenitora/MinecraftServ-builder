@@ -26,8 +26,8 @@ inputs:
 runs:
   using: composite
   steps:
-    # Les runners GitHub-hosted n'ont qu'environ 14 Go libres. On récupère
-    # ~25 Go en supprimant des SDK préinstallés inutiles ici.
+    # GitHub-hosted runners only have about 14 GB free. About 25 GB are
+    # reclaimed by removing preinstalled SDKs that are useless here.
     - name: Libérer de l'espace disque
       shell: bash
       run: |
@@ -56,20 +56,20 @@ runs:
         CONTINUE_ON_ERROR: ${{ inputs.continue_on_error }}
       run: |
         set -euo pipefail
-        # Le JSON est lu directement depuis le fichier sur disque (jamais via
-        # une variable d'environnement / un output GitHub Actions), car les
-        # matrices peuvent dépasser les limites de taille de l'environnement
-        # d'un process (erreur "Argument list too long" observée avec des
-        # matrices de ~250 Ko+, ex: vanilla/fabric en mode daily initial).
+        # The JSON is read directly from the file on disk (never through an
+        # environment variable / GitHub Actions output), because matrices can
+        # exceed a process's environment size limits ("Argument list too
+        # long" error seen with ~250 KB+ matrices, e.g. vanilla/fabric on the
+        # initial daily run).
         jq -c '.include[]' "$MATRIX_FILE" > /tmp/jobs.ndjson
         TOTAL=$(wc -l < /tmp/jobs.ndjson)
         echo "== $TOTAL version(s) à construire pour $LOADER =="
 
-        # Images Java de base tirées depuis le miroir ECR Public des images
-        # officielles Docker (public.ecr.aws/docker/library) plutôt que depuis
-        # Docker Hub : les pulls Docker Hub sont limités par compte/heure et
-        # chaque version re-résout les images de base pour 2 architectures,
-        # ce qui faisait échouer des builds à des endroits aléatoires.
+        # Java base images are pulled from the ECR Public mirror of the
+        # official Docker images (public.ecr.aws/docker/library) rather than
+        # from Docker Hub: Docker Hub pulls are rate limited per account/hour
+        # and every version re-resolves the base images for 2 architectures,
+        # which made builds fail at random points.
         BASE="public.ecr.aws/docker/library/eclipse-temurin"
 
         build_one() {
@@ -126,9 +126,9 @@ runs:
             fi
           fi
 
-          # Purge du cache buildx après chaque version. --keep-storage doit
-          # rester nettement SOUS l'espace libre du runner : l'ancienne valeur
-          # (20 Go, pour ~14 Go libres) ne déclenchait jamais la purge.
+          # Purge the buildx cache after each version. --keep-storage must stay
+          # well BELOW the runner's free space: the old value (20 GB, for
+          # ~14 GB free) never triggered the purge.
           docker buildx prune -f --keep-storage 4GB >/dev/null 2>&1 || true
         done < /tmp/jobs.ndjson
 

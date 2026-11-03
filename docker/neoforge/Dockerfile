@@ -1,6 +1,6 @@
-# Image "neoforge" — https://neoforged.net
+# "neoforge" image: https://neoforged.net
 #
-# Build args attendus (fournis par scripts/resolve_versions.py):
+# Expected build args (provided by scripts/resolve_versions.py):
 #   JAVA_IMAGE, JAVA_RUNTIME_IMAGE, MC_VERSION, LOADER_VERSION, INSTALLER_URL
 ARG JAVA_IMAGE=eclipse-temurin:21-jdk-jammy
 ARG JAVA_RUNTIME_IMAGE=eclipse-temurin:21-jre-jammy
@@ -15,8 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf 
 
 RUN curl -fsSL -o installer.jar "$INSTALLER_URL"
 
-# NeoForge ne supporte que les versions récentes (>= 1.20.2), l'installeur
-# génère systématiquement run.sh référencant des fichiers d'arguments.
+# NeoForge only supports recent versions (>= 1.20.2); the installer always
+# generates a run.sh that references argument files.
 RUN set -eux; \
     java -jar installer.jar --installServer; \
     rm -f installer.jar installer.jar.log; \

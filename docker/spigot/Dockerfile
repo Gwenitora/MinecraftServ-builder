@@ -1,8 +1,8 @@
-# Image "spigot" — compilé via BuildTools officiel (https://www.spigotmc.org/wiki/buildtools/)
-# Spigot ne distribue pas de jars précompilés : BuildTools clone les sources
-# Bukkit/CraftBukkit/Spigot et applique les mappings Mojang à la compilation.
+# "spigot" image: compiled with the official BuildTools (https://www.spigotmc.org/wiki/buildtools/)
+# Spigot does not distribute precompiled jars: BuildTools clones the
+# Bukkit/CraftBukkit/Spigot sources and applies the Mojang mappings at compile time.
 #
-# Build args attendus (fournis par scripts/resolve_versions.py):
+# Expected build args (provided by scripts/resolve_versions.py):
 #   JAVA_IMAGE, JAVA_RUNTIME_IMAGE, MC_VERSION (= BUILDTOOLS_REV)
 ARG JAVA_IMAGE=eclipse-temurin:21-jdk-jammy
 ARG JAVA_RUNTIME_IMAGE=eclipse-temurin:21-jre-jammy

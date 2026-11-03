@@ -1,13 +1,13 @@
-# Image "velocity" — https://papermc.io/software/velocity (proxy Minecraft).
+# "velocity" image: https://papermc.io/software/velocity (Minecraft proxy).
 #
-# Velocity n'est pas un serveur de jeu mais un proxy placé devant des
-# serveurs (paper, fabric...). Il est versionné indépendamment de Minecraft :
-# MC_VERSION contient ici la version de Velocity (ex: 3.4.0-SNAPSHOT) et
-# LOADER_VERSION le numéro de build.
+# Velocity is not a game server but a proxy placed in front of servers
+# (paper, fabric...). It is versioned independently from Minecraft:
+# MC_VERSION holds the Velocity version here (e.g. 3.4.0-SNAPSHOT) and
+# LOADER_VERSION the build number.
 #
-# Build args attendus (fournis par scripts/resolve_versions.py):
-#   JAVA_IMAGE, JAVA_RUNTIME_IMAGE, MC_VERSION (= version Velocity),
-#   LOADER_VERSION (= build Velocity), JAR_URL
+# Expected build args (provided by scripts/resolve_versions.py):
+#   JAVA_IMAGE, JAVA_RUNTIME_IMAGE, MC_VERSION (= Velocity version),
+#   LOADER_VERSION (= Velocity build), JAR_URL
 ARG JAVA_IMAGE=public.ecr.aws/docker/library/eclipse-temurin:21-jdk-jammy
 ARG JAVA_RUNTIME_IMAGE=public.ecr.aws/docker/library/eclipse-temurin:21-jre-jammy
 
@@ -29,8 +29,8 @@ FROM ${JAVA_RUNTIME_IMAGE}
 LABEL org.opencontainers.image.source="https://github.com/Gwenitora/MinecraftServ-builder"
 LABEL org.opencontainers.image.description="Proxy Minecraft Velocity"
 
-# Un proxy consomme peu de mémoire : valeurs par défaut plus basses que pour
-# un serveur de jeu (recommandation PaperMC : 512 Mo à 1 Go).
+# A proxy uses little memory: lower defaults than for a game server
+# (PaperMC recommendation: 512 MB to 1 GB).
 ENV ACCEPT_EULA=true \
     MIN_MEMORY=512M \
     MAX_MEMORY=1G

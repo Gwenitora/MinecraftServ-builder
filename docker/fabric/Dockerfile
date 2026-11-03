@@ -1,9 +1,9 @@
-# Image "fabric" — https://fabricmc.net
+# "fabric" image: https://fabricmc.net
 #
-# Build args attendus (fournis par scripts/resolve_versions.py):
+# Expected build args (provided by scripts/resolve_versions.py):
 #   JAVA_IMAGE, JAVA_RUNTIME_IMAGE, MC_VERSION, LOADER_VERSION, JAR_URL
-# JAR_URL pointe vers l'endpoint "server jar" de la meta Fabric qui assemble
-# directement un jar serveur prêt à l'emploi pour (mc_version, loader_version).
+# JAR_URL points to the "server jar" endpoint of the Fabric meta API, which
+# directly assembles a ready-to-use server jar for (mc_version, loader_version).
 ARG JAVA_IMAGE=eclipse-temurin:21-jdk-jammy
 ARG JAVA_RUNTIME_IMAGE=eclipse-temurin:21-jre-jammy
 

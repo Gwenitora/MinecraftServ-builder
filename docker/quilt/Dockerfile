@@ -1,18 +1,18 @@
-# Image "quilt" — https://quiltmc.org (fork de Fabric)
+# "quilt" image: https://quiltmc.org (fork of Fabric)
 #
-# Build args attendus (fournis par scripts/resolve_versions.py):
+# Expected build args (provided by scripts/resolve_versions.py):
 #   JAVA_RUNTIME_IMAGE, MC_VERSION, LOADER_VERSION, INSTALLER_URL
 #
-# Contrairement à Fabric, l'API Quilt n'expose pas d'endpoint "serveur
-# fusionné" prêt à télécharger : il faut exécuter le quilt-installer
-# officiel, qui télécharge lui-même le serveur vanilla et fusionne le
-# loader. Le builder utilise donc toujours un JDK récent (indépendant de la
-# version Java ciblée par le serveur final) pour être sûr de pouvoir
-# exécuter cet installeur quelle que soit l'ancienneté de la version MC.
+# Unlike Fabric, the Quilt API does not expose a ready-to-download "merged
+# server" endpoint: the official quilt-installer has to run, and it
+# downloads the vanilla server itself and merges the loader. The builder
+# therefore always uses a recent JDK (independent of the Java version
+# targeted by the final server) to be sure it can run this installer
+# whatever the age of the MC version.
 #
-# Les images de base viennent du miroir ECR Public des images officielles
-# Docker (public.ecr.aws/docker/library) pour ne pas consommer le quota de
-# pulls Docker Hub.
+# The base images come from the ECR Public mirror of the official Docker
+# images (public.ecr.aws/docker/library) so they do not consume the Docker
+# Hub pull quota.
 ARG JAVA_RUNTIME_IMAGE=public.ecr.aws/docker/library/eclipse-temurin:21-jre-jammy
 
 FROM public.ecr.aws/docker/library/eclipse-temurin:21-jdk-jammy AS builder

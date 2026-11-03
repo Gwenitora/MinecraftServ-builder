@@ -1,6 +1,6 @@
-# Image "vanilla" — serveur Minecraft officiel (Mojang), sans mod/plugin.
+# "vanilla" image: official Minecraft server (Mojang), no mods/plugins.
 #
-# Build (fourni par le workflow GitHub Actions / scripts/resolve_versions.py):
+# Build (provided by the GitHub Actions workflow / scripts/resolve_versions.py):
 #   --build-arg JAVA_IMAGE=eclipse-temurin:21-jdk-jammy
 #   --build-arg JAVA_RUNTIME_IMAGE=eclipse-temurin:21-jre-jammy
 #   --build-arg MC_VERSION=1.21.2
@@ -15,7 +15,7 @@ WORKDIR /opt/server-src
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl jq && rm -rf /var/lib/apt/lists/*
 
-# Le manifeste de version Mojang contient l'URL du jar serveur.
+# The Mojang version manifest contains the URL of the server jar.
 RUN set -eux; \
     curl -fsSL -o version.json "$MANIFEST_URL"; \
     SERVER_URL=$(jq -r '.downloads.server.url' version.json); \
