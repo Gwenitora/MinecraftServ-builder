@@ -9,9 +9,13 @@
 # loader. Le builder utilise donc toujours un JDK récent (indépendant de la
 # version Java ciblée par le serveur final) pour être sûr de pouvoir
 # exécuter cet installeur quelle que soit l'ancienneté de la version MC.
-ARG JAVA_RUNTIME_IMAGE=eclipse-temurin:21-jre-jammy
+#
+# Les images de base viennent du miroir ECR Public des images officielles
+# Docker (public.ecr.aws/docker/library) pour ne pas consommer le quota de
+# pulls Docker Hub.
+ARG JAVA_RUNTIME_IMAGE=public.ecr.aws/docker/library/eclipse-temurin:21-jre-jammy
 
-FROM eclipse-temurin:21-jdk-jammy AS builder
+FROM public.ecr.aws/docker/library/eclipse-temurin:21-jdk-jammy AS builder
 ARG MC_VERSION
 ARG LOADER_VERSION
 ARG INSTALLER_URL

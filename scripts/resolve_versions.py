@@ -125,6 +125,11 @@ def java_for_mc(mc_version):
     if major == 1:
         if minor >= 21:
             return "21"
+        # 1.20.5 et 1.20.6 exigent Java 21 (class file version 65) :
+        # avec Java 17 le serveur plante au démarrage.
+        patch = nums[2] if len(nums) > 2 else 0
+        if minor == 20 and patch >= 5:
+            return "21"
         if minor >= 18:
             return "17"
         if minor >= 17:
@@ -445,6 +450,34 @@ def pick_loader_strict(loaders, channel):
     return cand[0] if cand else None
 
 
+MOVING_GLOBAL = ("latest", "snapshot", "experimental")
+MOVING_SUFFIXES = ("-latest", "-snapshot", "-experimental")
+
+
+def is_moving_job(j, live_depths):
+    """Vrai si le job porte un tag mouvant, c.-à-d. un tag qui doit être
+    republié chaque jour pour suivre la dernière version : tags globaux
+    (latest, snapshot, experimental, latest_*...) et tags de profondeur
+    partielle de la branche ACTIVE (live_depths = profondeurs de la dernière
+    release, ex. "1", "1.21" : "1-latest", "1.21", "1.21-snapshot"...).
+    Les profondeurs des branches terminées ("1.4", "1.12"...) ne bougent plus :
+    elles ne sont republiées que si un de leurs tags manque (ou en backfill).
+    "<mc>-latest" (profondeur complète, ex. "1.4.6-latest") n'est PAS
+    mouvant : il désigne toujours la même version de Minecraft. Les nouvelles
+    versions de loader pour une version MC sont détectées via le tag
+    explicite "<mc>_<loader>" (absent de known_tags tant qu'il n'est pas publié)."""
+    for t in j["tags"]:
+        if t in MOVING_GLOBAL or t.startswith(tuple(f"{g}{SEP}" for g in MOVING_GLOBAL)):
+            return True
+        if t in live_depths and t != j["mc_version"]:
+            return True
+        for s in MOVING_SUFFIXES:
+            base = t[: -len(s)]
+            if t.endswith(s) and base != j["mc_version"] and base in live_depths:
+                return True
+    return False
+
+
 def build_jobs(loader_name, entries, mode, known_tags):
     """entries: sortie d'un provider. Retourne une liste de jobs matrix,
     triée par ordre chronologique d'apparition (plus ancien -> plus récent)."""
@@ -467,7 +500,24 @@ def build_jobs(loader_name, entries, mode, known_tags):
         })
         j["tags"].update(tags)
 
+    # propriétaire de chaque tag de profondeur ("1", "1.20", "1.20.6") : la
+    # release la plus haute de cette profondeur. Sans ça, CHAQUE release
+    # recevait "1"/"1-latest"/"1.x"/"1.x-latest" : (a) le filtre daily
+    # gardait toutes les releases (tags en "-latest") et reconstruisait tout
+    # l'historique chaque jour, (b) un run interrompu laissait ":1" pointer
+    # vers une version ancienne (dernière version poussée avant l'échec).
+    depth_owner = {}
+    for e in by_channel["latest"]:
+        tup = _mc_version_tuple(e["mc_version"])
+        if tup is None:
+            continue
+        for d in depth_tags(e["mc_version"]):
+            cur = depth_owner.get(d)
+            if cur is None or tup > cur[0]:
+                depth_owner[d] = (tup, e["mc_version"])
+
     global_latest_mc = by_channel["latest"][0] if by_channel["latest"] else None
+    live_depths = set(depth_tags(global_latest_mc["mc_version"])) if global_latest_mc else set()
     global_snapshot_mc = by_channel["snapshot"][0] if by_channel["snapshot"] else None
     global_experimental_mc = by_channel["experimental"][0] if by_channel["experimental"] else None
 
@@ -482,6 +532,10 @@ def build_jobs(loader_name, entries, mode, known_tags):
         tags = {mc}
         # --- profondeurs (seulement pour les mc versions numériques pures, canal release)
         depths = depth_tags(mc) if e["mc_channel"] == "latest" else []
+        # le tag exact (profondeur complète) reste toujours sur sa version ;
+        # les profondeurs partielles ("1", "1.20") et tous les "-latest" ne
+        # vont qu'à la release la plus haute de la profondeur.
+        depths = [d for d in depths if depth_owner.get(d, (None, None))[1] == mc]
         for d in depths:
             tags.add(d)
             tags.add(f"{d}-latest")
@@ -492,6 +546,11 @@ def build_jobs(loader_name, entries, mode, known_tags):
         # et "<mc>_experimental" quand un build expérimental du loader existe
         # réellement pour cette version de Minecraft.
         add_job(mc, default_loader["id"], e["java"], {f"{mc}{SEP}latest"}, default_loader["build_args"], job_sort_key(e, default_loader["id"]))
+        # tag explicite "<mc>_<loader>" sur le loader par défaut (sauf vanilla,
+        # où loader == version MC) : c'est lui qui fait reconstruire en daily
+        # quand un nouveau build de loader sort pour une version MC existante.
+        if loader_name != "vanilla" and default_loader["id"] != mc:
+            add_job(mc, default_loader["id"], e["java"], {f"{mc}{SEP}{default_loader['id']}"}, default_loader["build_args"], job_sort_key(e, default_loader["id"]))
         exp_keyword_loader = pick_loader_strict(loaders, "experimental")
         if exp_keyword_loader:
             add_job(mc, exp_keyword_loader["id"], e["java"], {f"{mc}{SEP}experimental"}, exp_keyword_loader["build_args"], job_sort_key(e, exp_keyword_loader["id"]))
@@ -554,23 +613,20 @@ def build_jobs(loader_name, entries, mode, known_tags):
     if mode == "daily":
         # ne garde que les jobs touchant au moins un tag encore jamais publié,
         # ou un tag mouvant (toujours republié pour rester à jour)
-        moving = {"latest", "snapshot", "experimental"}
         filtered = []
         for j in result:
-            j_tags = j["tags"]
-            if j_tags & moving:
-                filtered.append(j)
-                continue
-            if any(t.endswith(("-latest", "-snapshot", "-experimental")) for t in j_tags):
-                filtered.append(j)
-                continue
-            if any(t not in known_tags for t in j_tags):
+            if is_moving_job(j, live_depths) or any(t not in known_tags for t in j["tags"]):
                 filtered.append(j)
         result = filtered
 
     # ordre chronologique d'apparition (plus ancien -> plus récent) : essentiel
     # pour un build séquentiel où un échec doit arrêter les versions suivantes.
     result.sort(key=lambda j: j["_sort_key"])
+    if mode == "daily":
+        # en daily, les jobs portant un tag mouvant (latest, profondeurs,
+        # snapshot...) passent en premier : un échec plus loin dans la liste
+        # ne doit pas empêcher de rafraîchir ce que les utilisateurs tirent.
+        result.sort(key=lambda j: 0 if is_moving_job(j, live_depths) else 1)
     for j in result:
         j.pop("_sort_key", None)
         j["tags"] = sorted(j["tags"])
