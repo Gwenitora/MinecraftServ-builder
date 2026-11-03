@@ -63,4 +63,4 @@ Everything lives in `/app`: `server.properties`
 ([reference](https://docs.papermc.io/paper/reference/configuration)),
 `plugins/`, `world/`, `logs/`. Your files are kept when the image is updated.
 
-Java: 11 for 1.12-1.16.5, 17 for 1.17-1.20.4, 21 from 1.20.5.
+Java: 8 before 1.12, 11 for 1.12-1.16.5, 17 for 1.17-1.20.4, 21 from 1.20.5.

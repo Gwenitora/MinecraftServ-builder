@@ -62,7 +62,7 @@ Everything lives in `/app`: `server.properties`
 image is updated.
 
 Java: 8 for every version before 1.13 (the old Forge launcher does not run on
-newer Java), 17 for 1.17-1.20.4, 21 from 1.20.5.
+newer Java), 11 for 1.13-1.16.5, 17 for 1.17-1.20.4, 21 from 1.20.5.
 
 ## Limitations
 
