@@ -504,10 +504,13 @@ def exact_tag_base(version, depth_owner_of):
     return version
 
 
-# Marker tag published once the explicit "<v>_<loader>" tags exist (it is
-# carried by the "latest" image and by the migration retags). Its presence
-# on Docker Hub means the migration below is done and must never run again:
-# otherwise a new loader build would be mistaken for a missing migration.
+# Marker tag published once the explicit "<v>_<loader>" tags exist. Its
+# presence on Docker Hub means the migration below is done and must never
+# run again: otherwise a new loader build would be mistaken for a missing
+# migration. While retags are pending it is carried ONLY by the last retag
+# job (and the build action drops it if any retag failed), so an interrupted
+# or partially failed migration is resumed on the next daily run. When there
+# is nothing to retag, the "latest" job carries it.
 MIGRATION_MARKER = "tag-scheme-v2"
 
 
@@ -522,8 +525,8 @@ def apply_migration(result, known_tags, explicit_tags, live_depths):
     is turned into a retag job: the build step then adds the missing tags to
     the existing image (docker buildx imagetools create) instead of
     compiling. Versions that are really missing are still built. Retag jobs
-    come first so a failure later in the run cannot leave the migration
-    half done."""
+    come first, and only the last one carries MIGRATION_MARKER (with
+    "marker_tag" set, so the build action can drop it if a retag failed)."""
     if MIGRATION_MARKER in known_tags or not explicit_tags:
         return result
     retags, others = [], []
@@ -534,9 +537,14 @@ def apply_migration(result, known_tags, explicit_tags, live_depths):
         src = j.get("_exact_tag")
         if (explicit and missing == {explicit} and src in known_tags
                 and not is_moving_job(j, live_depths)):
-            retags.append(dict(j, tags={explicit, MIGRATION_MARKER}, retag_from=src))
+            retags.append(dict(j, tags={explicit}, retag_from=src))
         else:
             others.append(j)
+    if retags:
+        for j in others:
+            j["tags"].discard(MIGRATION_MARKER)
+        retags[-1]["tags"].add(MIGRATION_MARKER)
+        retags[-1]["marker_tag"] = MIGRATION_MARKER
     return retags + others
 
 
