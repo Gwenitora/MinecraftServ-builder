@@ -372,7 +372,7 @@ def provider_fabric():
     installers = http_json(installer_url)
     stable_installer = next((i["version"] for i in installers if i.get("stable")), installers[0]["version"])
     out = []
-    for g in games:
+    for i, g in enumerate(games):
         mc = g["version"]
         ch = "latest" if g.get("stable") else "snapshot"
         entries = []
@@ -382,7 +382,9 @@ def provider_fabric():
                 "id": l["version"], "channel": lch,
                 "build_args": {"JAR_URL": jar_url_tpl.format(game=url_segment(mc), loader=url_segment(l["version"]), installer=url_segment(stable_installer))},
             })
-        out.append({"mc_version": mc, "mc_channel": ch, "java": java_for_mc(mc), "loaders": entries})
+        # "seq": chronological position (the API lists newest first), used to
+        # attach weekly snapshots ("24w10a") to the release that followed them.
+        out.append({"mc_version": mc, "mc_channel": ch, "java": java_for_mc(mc), "seq": len(games) - i, "loaders": entries})
     return out
 
 
@@ -402,7 +404,7 @@ def provider_quilt():
     installer_url = installer_url_by_version[stable_installer]
 
     out = []
-    for g in games:
+    for i, g in enumerate(games):
         mc = g["version"]
         ch = "latest" if g.get("stable") else "snapshot"
         entries = []
@@ -412,7 +414,8 @@ def provider_quilt():
                 "id": l["version"], "channel": lch,
                 "build_args": {"INSTALLER_URL": installer_url},
             })
-        out.append({"mc_version": mc, "mc_channel": ch, "java": java_for_mc(mc), "loaders": entries})
+        # "seq": chronological position (the API lists newest first).
+        out.append({"mc_version": mc, "mc_channel": ch, "java": java_for_mc(mc), "seq": len(games) - i, "loaders": entries})
     return out
 
 
@@ -489,6 +492,39 @@ def pick_loader_strict(loaders, channel):
     build published for a given Minecraft version)."""
     cand = [l for l in loaders if l["channel"] == channel]
     return cand[0] if cand else None
+
+
+def snapshot_target(name):
+    """Release a pre-release/snapshot leads to, read from its name, with its
+    rank inside that release: "1.18-pre8" -> ("1.18", 1, 8),
+    "26.1-snapshot-2" -> ("26.1", 0, 2), "1.20.5-rc1" -> ("1.20.5", 2, 1),
+    "1.14 Pre-Release 1" -> ("1.14", 1, 1). Rank: snapshot 0 < pre 1 < rc 2.
+    Returns None when the name carries no target version (weekly snapshots
+    such as "24w10a", April fools versions...)."""
+    m = re.match(r"^(\d+(?:\.\d+)+)[ _-]*(.*)$", name)
+    if not m or not m.group(2):
+        return None
+    rest = m.group(2).lower()
+    if re.search(r"rc|release[ _-]?candidate", rest):
+        kind = 2
+    elif "pre" in rest:
+        kind = 1
+    else:
+        kind = 0
+    num = re.search(r"\d+", rest)
+    return m.group(1), kind, int(num.group()) if num else 0
+
+
+def chrono_key(e):
+    """Chronological position of an entry: real release date when known
+    (vanilla), otherwise the provider's "seq" (fabric/quilt), else None."""
+    rt = e.get("release_time")
+    if rt:
+        try:
+            return datetime.datetime.fromisoformat(rt.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            pass
+    return e.get("seq")
 
 
 def exact_tag_base(version, depth_owner_of):
@@ -616,8 +652,53 @@ def build_jobs(loader_name, entries, mode, known_tags):
     global_latest_mc = by_channel["latest"][0] if by_channel["latest"] else None
     live_depths = set(depth_tags(global_latest_mc["mc_version"])) if global_latest_mc else set()
     explicit_tags = {}  # (mc, default loader) -> "<base>_<loader>", for the migration
-    global_snapshot_mc = by_channel["snapshot"][0] if by_channel["snapshot"] else None
     global_experimental_mc = by_channel["experimental"][0] if by_channel["experimental"] else None
+
+    # --- target release of every snapshot / pre-release, so that
+    # "<depth>-snapshot" points to a snapshot of THAT depth ("1.18-snapshot"
+    # -> 1.18-pre8), never to an unrelated one (the old code put the depths of
+    # the latest release, e.g. "26-snapshot", on whatever snapshot was last).
+    releases_by_time = sorted(
+        (chrono_key(r), r["mc_version"]) for r in by_channel["latest"]
+        if chrono_key(r) is not None and _mc_version_tuple(r["mc_version"]))
+
+    def snapshot_rank(e):
+        """(target version, rank key) of a snapshot, or None if unknown."""
+        c = chrono_key(e)
+        t = snapshot_target(e["mc_version"])
+        if t is None and e["mc_channel"] == "snapshot" and c is not None:
+            # weekly snapshot: it leads to the first release published after it
+            nxt = next((v for rc, v in releases_by_time if rc > c), None)
+            if nxt is None:
+                # newer than every release: upcoming version, number unknown
+                return None, ((10 ** 9,), 0, 0, 0, c)
+            t = (nxt, 0, 0)
+        if t is None or _mc_version_tuple(t[0]) is None:
+            return None, None
+        # equal rank (e.g. "1.21.11-pre5" vs "1.21.11-pre5_unobfuscated"):
+        # prefer the plain name, then the most recent one
+        return t[0], (_mc_version_tuple(t[0]), t[1], t[2], -len(e["mc_version"]), c or 0)
+
+    snapshot_owner = {}  # (suffix, depth) -> (rank key, entry)
+    ranked_snapshots = []
+    for e in by_channel["snapshot"] + by_channel["experimental"]:
+        target, key = snapshot_rank(e)
+        if key is None:
+            continue
+        if e["mc_channel"] == "snapshot":
+            ranked_snapshots.append((key, e))
+        if target is None:
+            continue
+        for d in depth_tags(target):
+            cur = snapshot_owner.get((e["mc_channel"], d))
+            if cur is None or key > cur[0]:
+                snapshot_owner[(e["mc_channel"], d)] = (key, e)
+    # global "snapshot": the newest snapshot (by target version, then
+    # snapshot < pre < rc, then date); falls back to the provider order.
+    if ranked_snapshots:
+        global_snapshot_mc = max(ranked_snapshots, key=lambda x: x[0])[1]
+    else:
+        global_snapshot_mc = by_channel["snapshot"][0] if by_channel["snapshot"] else None
 
     for e in entries:
         mc = e["mc_version"]
@@ -694,21 +775,12 @@ def build_jobs(loader_name, entries, mode, known_tags):
         if dl:
             add_job(e["mc_version"], dl["id"], e["java"], {"experimental", f"experimental{SEP}latest"}, dl["build_args"], job_sort_key(e, dl["id"]))
 
-    # --- -snapshot / -experimental depth tags: the latest known
-    # snapshot/experimental version is attached to every depth of the
-    # latest release (best effort, see the README for the limits of this heuristic)
-    if global_latest_mc:
-        depths = depth_tags(global_latest_mc["mc_version"])
-        if global_snapshot_mc:
-            dl = pick_default_loader(global_snapshot_mc["loaders"], "latest")
-            if dl:
-                add_job(global_snapshot_mc["mc_version"], dl["id"], global_snapshot_mc["java"],
-                        {f"{d}-snapshot" for d in depths}, dl["build_args"], job_sort_key(global_snapshot_mc, dl["id"]))
-        if global_experimental_mc:
-            dl = pick_default_loader(global_experimental_mc["loaders"], "latest")
-            if dl:
-                add_job(global_experimental_mc["mc_version"], dl["id"], global_experimental_mc["java"],
-                        {f"{d}-experimental" for d in depths}, dl["build_args"], job_sort_key(global_experimental_mc, dl["id"]))
+    # --- "<depth>-snapshot" / "<depth>-experimental": the newest snapshot
+    # whose target release belongs to that depth (see snapshot_rank above).
+    for (suffix, d), (_, e) in snapshot_owner.items():
+        dl = pick_default_loader(e["loaders"], "latest")
+        if dl:
+            add_job(e["mc_version"], dl["id"], e["java"], {f"{d}-{suffix}"}, dl["build_args"], job_sort_key(e, dl["id"]))
 
     result = list(jobs.values())
     for j in result:
