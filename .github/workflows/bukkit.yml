@@ -20,17 +20,6 @@ on:
         description: "Supprimer d'abord TOUS les tags déjà publiés sur Docker Hub (repart de zéro)"
         type: boolean
         default: false
-  push:
-    branches: [main]
-    paths:
-      - docker/bukkit/**
-      - entrypoint/**
-      - scripts/resolve_versions.py
-      - .github/actions/resolve-versions/**
-      - .github/actions/build-loader/**
-      - .github/actions/reset-images/**
-      - .github/workflows/bukkit.yml
-
 concurrency:
   group: bukkit-${{ github.ref }}
   cancel-in-progress: true
@@ -38,8 +27,6 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # Les runners GitHub-hosted ont une limite dure de 6h : au-delà, découpez
-    # un backfill complet en plusieurs runs avec --limit/--offset.
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
