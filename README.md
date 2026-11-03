@@ -2,7 +2,7 @@
 
 Images Docker prêtes à l'emploi pour héberger un serveur Minecraft, quel que
 soit le loader : **vanilla, bukkit, spigot, paper, forge, neoforge, fabric,
-quilt**. Toutes les versions officiellement publiées par chaque projet sont
+quilt**, ainsi que le proxy **velocity**. Toutes les versions officiellement publiées par chaque projet sont
 disponibles — releases, snapshots, et versions historiques/expérimentales —
 et les images sont reconstruites automatiquement chaque jour.
 
@@ -23,6 +23,7 @@ et les images sont reconstruites automatiquement chaque jour.
 | NeoForge   | `minecraftserv/neoforge`       | https://neoforged.net/ |
 | Fabric     | `minecraftserv/fabric`         | https://fabricmc.net/use/server/ |
 | Quilt      | `minecraftserv/quilt`          | https://quiltmc.org/en/install/server/ |
+| Velocity (proxy) | `minecraftserv/velocity` | https://papermc.io/software/velocity |
 
 ## Démarrage rapide
 
@@ -87,6 +88,32 @@ est **`_`** (underscore) — Docker n'autorise pas `:` dans un tag.
   séparée (le "loader" est la version du jeu elle-même), donc le suffixe
   `_<version-loader>` n'a pas d'effet utile.
 
+### Tags de Velocity (proxy)
+
+Velocity n'est pas lié à une version de Minecraft : un même build accepte
+toutes les versions clientes qu'il supporte. Ses tags reprennent donc le
+même système, mais avec la **version de Velocity** à la place de la version
+de Minecraft, et le **numéro de build** à la place de la version du loader :
+
+| Tag | Pointe vers |
+|-----|-------------|
+| `latest` (= `latest_latest`) | dernier build stable de la version Velocity la plus haute (aujourd'hui une `-SNAPSHOT`, c'est la ligne que PaperMC recommande) |
+| `latest_experimental` (= `experimental`) | dernier build non stable de cette version, s'il en existe |
+| `snapshot` (= `snapshot_latest`) | dernier build de la ligne de dev `-SNAPSHOT` la plus haute |
+| `3.4.0-SNAPSHOT` (= `3.4.0-SNAPSHOT_latest`) | dernier build stable de cette version |
+| `3.4.0-SNAPSHOT_523` | exactement ce build |
+| `3.4.0-SNAPSHOT_experimental` | dernier build non stable de cette version |
+| `3`, `3.4`, `3.4.0` (+ `-latest`) | version la plus haute de ce niveau ; une version finale passe devant sa `-SNAPSHOT` (`3.4.0` pointe vers `3.4.0-SNAPSHOT` tant que `3.4.0` finale n'existe pas) |
+
+Le port par défaut est `25577`, et la mémoire par défaut plus basse
+(`MIN_MEMORY=512M`, `MAX_MEMORY=1G`). La configuration se trouve dans
+`/app/velocity.toml` (créé au premier lancement) :
+https://docs.papermc.io/velocity/configuration
+
+```bash
+docker run -d --name proxy -p 25577:25577 -v proxy_data:/app minecraftserv/velocity:latest
+```
+
 ### Canaux (comment une version est classée)
 
 | Canal Docker   | Vanilla (type Mojang)      | Paper / Fabric / Quilt (API du projet) | Forge / NeoForge (nom du build) |
@@ -148,9 +175,13 @@ scripts/resolve_versions.py       # interroge les API officielles de chaque load
 .github/actions/resolve-versions/ # action composite: calcule la matrix de build pour un loader
 .github/actions/build-loader/     # action composite: build + push TOUTES les versions de la matrix, une par une, 1 nouvel essai par version, sans arrêt au 1er échec
 .github/actions/reset-images/     # action composite: supprime tous les tags Docker Hub existants d'un loader (option "reset")
-.github/workflows/<loader>.yml    # déclenchement quotidien (cron, décalé de 3 h entre loaders) par loader, job unique séquentiel utilisant les actions ci-dessus
+.github/workflows/<loader>.yml    # déclenchement quotidien (cron, décalé entre loaders ; velocity à 1 h UTC) par loader, job unique séquentiel utilisant les actions ci-dessus
 .github/workflows/builds.yml       # déclenche manuellement un ou plusieurs workflows <loader>.yml
 ```
+
+Les builds ne se lancent **jamais** sur un push ou un merge, quelle que soit
+la branche : uniquement via le cron quotidien de chaque loader ou un
+lancement manuel (`workflow_dispatch`, voir plus bas).
 
 ### Ordre de build et gestion des échecs
 
@@ -254,9 +285,9 @@ versions et les tags mouvants).
    New repository secret**, ajoutez :
    - `DOCKERHUB_USERNAME` = `minecraftserv`
    - `DOCKERHUB_TOKEN` = le token généré à l'étape 2
-4. Créez les 8 dépôts Docker Hub (`minecraftserv/vanilla`, `.../bukkit`,
+4. Créez les 9 dépôts Docker Hub (`minecraftserv/vanilla`, `.../bukkit`,
    `.../spigot`, `.../paper`, `.../forge`, `.../neoforge`, `.../fabric`,
-   `.../quilt`) — publics, sinon les `docker pull` anonymes échoueront.
+   `.../quilt`, `.../velocity`) — publics, sinon les `docker pull` anonymes échoueront.
 5. Les workflows tournent automatiquement chaque jour ; vous pouvez aussi
    les lancer manuellement depuis l'onglet **Actions** du dépôt
    (`workflow_dispatch`).

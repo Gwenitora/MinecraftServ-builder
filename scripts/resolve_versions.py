@@ -417,6 +417,47 @@ def provider_quilt():
     return out
 
 
+# ---------------------------------------------------------------------------
+# Velocity (proxy PaperMC) : versionné indépendamment de Minecraft
+# ---------------------------------------------------------------------------
+
+def _velocity_order(v):
+    """Ordre des versions Velocity : "3.4.0-SNAPSHOT" < "3.4.0" < "3.4.1-SNAPSHOT".
+    Retourne (tuple numérique, 0 si -SNAPSHOT sinon 1) ou None si non parsable."""
+    base = v[: -len("-SNAPSHOT")] if v.endswith("-SNAPSHOT") else v
+    tup = _mc_version_tuple(base)
+    if tup is None:
+        return None
+    return (tup, 0 if v.endswith("-SNAPSHOT") else 1)
+
+
+def provider_velocity():
+    """Même API Fill v3 que Paper. Velocity est compatible avec toutes les
+    versions clientes de Minecraft qu'il supporte : il n'a PAS de version MC.
+    Le champ "mc_version" des entrées contient donc la version de Velocity
+    (ex: "3.4.0-SNAPSHOT") et les "loaders" sont ses builds."""
+    data = http_json("https://fill.papermc.io/v3/projects/velocity")
+    out = []
+    for family, versions in data["versions"].items():
+        for v in versions:
+            if _velocity_order(v) is None:
+                continue
+            builds = http_json(f"https://fill.papermc.io/v3/projects/velocity/versions/{url_segment(v)}/builds")
+            loaders = []
+            for b in sorted(builds, key=lambda b: int(b["id"]), reverse=True):
+                dl = b.get("downloads", {}).get("server:default")
+                if not dl:
+                    continue
+                lch = "latest" if b.get("channel", "STABLE").upper() in ("STABLE", "RECOMMENDED") else "experimental"
+                loaders.append({"id": str(b["id"]), "channel": lch, "build_args": {"JAR_URL": dl["url"]}})
+            if loaders:
+                # Java 21 pour toutes les versions : obligatoire pour les
+                # builds récents, et rétrocompatible pour les anciens.
+                out.append({"mc_version": v, "mc_channel": "snapshot" if v.endswith("-SNAPSHOT") else "latest",
+                            "java": "21", "loaders": loaders})
+    return out
+
+
 
 PROVIDERS = {
     "vanilla": provider_vanilla,
@@ -427,6 +468,7 @@ PROVIDERS = {
     "neoforge": provider_neoforge,
     "fabric": provider_fabric,
     "quilt": provider_quilt,
+    "velocity": provider_velocity,
 }
 
 
@@ -633,6 +675,77 @@ def build_jobs(loader_name, entries, mode, known_tags):
     return result
 
 
+def build_jobs_velocity(entries, mode, known_tags):
+    """Tags Velocity (aucune version de Minecraft dans les tags) :
+      latest / latest_latest      -> dernier build stable de la version la plus haute
+      latest_experimental         -> dernier build non stable de cette version (si existe)
+      snapshot / snapshot_latest  -> dernière ligne de dev "-SNAPSHOT" (souvent = latest)
+      experimental                -> alias de latest_experimental
+      <v> / <v>_latest            -> dernier build stable de la version <v> (ex: 3.4.0-SNAPSHOT)
+      <v>_experimental            -> dernier build non stable de <v>
+      <v>_<build>                 -> build exact (ex: 3.4.0-SNAPSHOT_523)
+      <d> / <d>-latest            -> profondeurs "3", "3.4", "3.4.0" : version la plus haute
+                                     du niveau, une release finale passant devant
+                                     sa -SNAPSHOT (3.4.0 > 3.4.0-SNAPSHOT)."""
+    jobs = {}
+
+    def add_job(v, l, tags):
+        j = jobs.setdefault((v, l["id"]), {
+            "loader": "velocity", "mc_version": v, "loader_version": l["id"], "java": "21",
+            "build_args": l["build_args"], "tags": set(), "_sort_key": (_velocity_order(v), int(l["id"])),
+        })
+        j["tags"].update(tags)
+
+    entries = sorted(entries, key=lambda e: _velocity_order(e["mc_version"]), reverse=True)
+    if not entries:
+        return []
+
+    depth_owner = {}
+    for e in entries:  # du plus haut au plus bas : le 1er vu gagne
+        base = e["mc_version"].removesuffix("-SNAPSHOT")
+        for d in depth_tags(base):
+            depth_owner.setdefault(d, e["mc_version"])
+
+    top = entries[0]["mc_version"]
+    live_depths = set(depth_tags(top.removesuffix("-SNAPSHOT")))
+    top_snapshot = next((e for e in entries if e["mc_version"].endswith("-SNAPSHOT")), None)
+
+    for e in entries:
+        v = e["mc_version"]
+        dl = pick_default_loader(e["loaders"], "latest")
+        exp = pick_loader_strict(e["loaders"], "experimental")
+        tags = {v, f"{v}{SEP}latest", f"{v}{SEP}{dl['id']}"}
+        for d, owner in depth_owner.items():
+            if owner == v:
+                tags.update({d, f"{d}-latest"})
+        if v == top:
+            tags.update({"latest", f"latest{SEP}latest"})
+        if top_snapshot and v == top_snapshot["mc_version"]:
+            tags.update({"snapshot", f"snapshot{SEP}latest"})
+        add_job(v, dl, tags)
+        if exp:
+            etags = {f"{v}{SEP}experimental", f"{v}{SEP}{exp['id']}"}
+            if v == top:
+                etags.update({"experimental", f"latest{SEP}experimental"})
+            add_job(v, exp, etags)
+        if mode == "backfill":
+            for l in e["loaders"]:
+                add_job(v, l, {f"{v}{SEP}{l['id']}"})
+
+    result = list(jobs.values())
+    for j in result:
+        j["tags"] = {sanitize_tag(t) for t in j["tags"]}
+    if mode == "daily":
+        result = [j for j in result if is_moving_job(j, live_depths) or any(t not in known_tags for t in j["tags"])]
+    result.sort(key=lambda j: j["_sort_key"])
+    if mode == "daily":
+        result.sort(key=lambda j: 0 if is_moving_job(j, live_depths) else 1)
+    for j in result:
+        j.pop("_sort_key", None)
+        j["tags"] = sorted(j["tags"])
+    return result
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--loader", required=True, choices=PROVIDERS.keys())
@@ -651,7 +764,10 @@ def main():
             pass
 
     entries = PROVIDERS[args.loader]()
-    jobs = build_jobs(args.loader, entries, args.mode, known_tags)
+    if args.loader == "velocity":
+        jobs = build_jobs_velocity(entries, args.mode, known_tags)
+    else:
+        jobs = build_jobs(args.loader, entries, args.mode, known_tags)
 
     if args.limit is not None:
         jobs = jobs[args.offset:args.offset + args.limit]
