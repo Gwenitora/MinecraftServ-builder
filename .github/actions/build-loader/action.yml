@@ -91,12 +91,14 @@ runs:
         i=0
         ok=0
         failed=()
+        retag_failed=0
         while IFS= read -r job; do
           i=$((i + 1))
           mc_version=$(echo "$job" | jq -r '.mc_version')
           loader_version=$(echo "$job" | jq -r '.loader_version')
           java=$(echo "$job" | jq -r '.java')
           retag_from=$(echo "$job" | jq -r '.retag_from // empty')
+          marker_tag=$(echo "$job" | jq -r '.marker_tag // empty')
 
           case "$java" in
             8) java_build=${BASE}:8-jdk-jammy; java_runtime=${BASE}:8-jre-jammy ;;
@@ -107,6 +109,12 @@ runs:
 
           tag_args=()
           while IFS= read -r t; do
+            # Never publish the migration marker if an earlier retag failed:
+            # the migration must then be resumed on the next daily run.
+            if [ -n "$marker_tag" ] && [ "$t" = "$marker_tag" ] && [ "$retag_failed" = "1" ]; then
+              echo "::warning::Migration incomplète : ${marker_tag} non publié, elle reprendra au prochain daily."
+              continue
+            fi
             tag_args+=(-t "minecraftserv/${LOADER}:${t}")
           done < <(echo "$job" | jq -r '.tags[]')
 
@@ -131,6 +139,7 @@ runs:
             df -h / /var/lib/docker 2>/dev/null || true
             docker system df 2>/dev/null || true
             failed+=("${mc_version} (loader ${loader_version})")
+            if [ -n "$retag_from" ]; then retag_failed=1; fi
             if [ "$CONTINUE_ON_ERROR" != "true" ]; then
               echo "### ❌ Arrêt sur ${mc_version} (loader ${loader_version}) — ${ok}/${TOTAL} version(s) construite(s) avec succès avant l'échec." >> "$GITHUB_STEP_SUMMARY"
               exit 1
