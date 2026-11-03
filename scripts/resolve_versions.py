@@ -10,11 +10,12 @@ Usage:
     python resolve_versions.py --loader forge --mode backfill --limit 200 > matrix.json
 
 Modes:
-    daily     -> only returns what needs refreshing every day: jobs carrying
-                 a moving tag (latest / snapshot / experimental and the depth
-                 tags of the active branch) + every tag never published
-                 before (compared against --state-file, a plain text file
-                 listing the already published tags).
+    daily     -> builds only the images that do not exist on Docker Hub yet;
+                 for existing images, only re-attaches the tags that are
+                 missing or point to another image (no rebuild), and lists
+                 stale depth tags to delete. Compared against --state-file,
+                 a text file listing the published tags (and the image each
+                 one points to).
     backfill  -> returns EVERY known version of the loader (used by the
                  manual backfill run that rebuilds the full history, in
                  small batches via --limit/--offset).
@@ -550,38 +551,76 @@ def exact_tag_base(version, depth_owner_of):
 MIGRATION_MARKER = "tag-scheme-v2"
 
 
-def apply_migration(result, known_tags, explicit_tags, live_depths):
-    """One-time migration of the explicit "<v>_<loader>" tags.
+def job_identity(j):
+    """Tag that identifies the image of a job, i.e. the (version, loader
+    build) pair: the explicit "<v>_<loader>" tag, or the exact version tag
+    when the loader is the game itself (vanilla, bukkit, spigot)."""
+    suffix = SEP + sanitize_tag(j["loader_version"])
+    explicit = [t for t in j["tags"] if t.endswith(suffix)
+                and not t.startswith(tuple(f"{g}{SEP}" for g in MOVING_GLOBAL))]
+    if explicit:
+        return min(explicit, key=len)
+    return j.get("_exact_tag")
 
-    Images built before these tags existed only carry "<v>", "<v>_latest"...
-    Without a migration, every one of them would look new and the first
-    daily run would rebuild the whole history. While MIGRATION_MARKER is not
-    published yet (= migration not done), a job whose
-    only missing tags are explicit ones, and whose exact tag already exists,
-    is turned into a retag job: the build step then adds the missing tags to
-    the existing image (docker buildx imagetools create) instead of
-    compiling. Versions that are really missing are still built. Retag jobs
-    come first, and only the last one carries MIGRATION_MARKER (with
-    "marker_tag" set, so the build action can drop it if a retag failed)."""
-    if MIGRATION_MARKER in known_tags or not explicit_tags:
-        return result
-    retags, others = [], []
+
+# Depth tags computed from the whole version list in every mode: one of them
+# that exists on Docker Hub but is no longer produced is stale (e.g. the old
+# "26-snapshot" put on 1.18-pre8) and is deleted.
+STALE_TAG_RE = re.compile(r"^\d+(?:\.\d+)*-(?:snapshot|experimental)$")
+
+
+def stale_tags(result, known_tags):
+    expected = set()
     for j in result:
-        missing = {t for t in j["tags"] if t not in known_tags}
-        key = (j["mc_version"], j["loader_version"])
-        explicit = explicit_tags.get(key)
-        src = j.get("_exact_tag")
-        if (explicit and missing == {explicit} and src in known_tags
-                and not is_moving_job(j, live_depths)):
-            retags.append(dict(j, tags={explicit}, retag_from=src))
+        expected |= j["tags"]
+    return sorted(t for t in known_tags if STALE_TAG_RE.match(t) and t not in expected)
+
+
+def plan_daily(result, known_tags, fingerprints, live_depths, migration_done=True):
+    """Daily plan. A job whose image already exists on Docker Hub (its
+    identity tag is published) is NEVER rebuilt: only its tags that are
+    missing or point to another image are (re)attached to it with
+    `docker buildx imagetools create` (job with "retag_from"). This also
+    repairs wrong tags left by older versions of this script. Only images
+    that do not exist yet are built.
+
+    fingerprints: tag -> fingerprint of the image it points to (digests of
+    its per-architecture manifests, from the Docker Hub API). Without them
+    (old state file format), only missing tags and moving tags are retagged.
+
+    One-time migration (migration_done False): images built before the
+    explicit "<v>_<loader>" tags existed are found through their exact tag
+    instead. Only the last migration retag carries MIGRATION_MARKER (with
+    "marker_tag", so the build action drops it if a retag failed), so an
+    interrupted migration resumes on the next daily run."""
+    mig, retags, builds = [], [], []
+    for j in result:
+        ident = job_identity(j)
+        src, via_mig = (ident, False) if ident in known_tags else (None, False)
+        if src is None and not migration_done:
+            ex = j.get("_exact_tag")
+            if ex and ex != ident and ex in known_tags:
+                src, via_mig = ex, True
+        if src is None:
+            builds.append(j)
+            continue
+        ref = fingerprints.get(src)
+        if ref:
+            wrong = {t for t in j["tags"] if fingerprints.get(t) != ref}
         else:
-            others.append(j)
-    if retags:
-        for j in others:
+            wrong = {t for t in j["tags"] if t not in known_tags}
+            if is_moving_job(j, live_depths):
+                wrong = set(j["tags"])
+        wrong.discard(src)
+        if not wrong:
+            continue
+        (mig if via_mig else retags).append(dict(j, tags=wrong, retag_from=src))
+    if mig:
+        for j in mig + retags + builds:
             j["tags"].discard(MIGRATION_MARKER)
-        retags[-1]["tags"].add(MIGRATION_MARKER)
-        retags[-1]["marker_tag"] = MIGRATION_MARKER
-    return retags + others
+        mig[-1]["tags"].add(MIGRATION_MARKER)
+        mig[-1]["marker_tag"] = MIGRATION_MARKER
+    return mig + retags + builds
 
 
 MOVING_GLOBAL = ("latest", "snapshot", "experimental")
@@ -612,7 +651,7 @@ def is_moving_job(j, live_depths):
     return False
 
 
-def build_jobs(loader_name, entries, mode, known_tags):
+def build_jobs(loader_name, entries, mode, known_tags, fingerprints=None, deletes=None):
     """entries: output of a provider. Returns a list of matrix jobs, sorted
     in chronological order of appearance (oldest -> newest); in daily mode,
     jobs carrying a moving tag come first."""
@@ -788,23 +827,17 @@ def build_jobs(loader_name, entries, mode, known_tags):
         if "_exact_tag" in j:
             j["_exact_tag"] = sanitize_tag(j["_exact_tag"])
 
-    if mode == "daily":
-        # only keep jobs that touch at least one never-published tag, or a
-        # moving tag (always republished to stay up to date)
-        filtered = []
-        for j in result:
-            if is_moving_job(j, live_depths) or any(t not in known_tags for t in j["tags"]):
-                filtered.append(j)
-        result = filtered
-
     # chronological order of appearance (oldest -> newest)
     result.sort(key=lambda j: j["_sort_key"])
     if mode == "daily":
-        # in daily mode, jobs carrying a moving tag (latest, depths,
-        # snapshot...) come first: a failure further down the list must not
-        # prevent refreshing what users actually pull.
+        if deletes is not None:
+            deletes.extend(stale_tags(result, known_tags))
+        # jobs carrying a moving tag (latest, depths, snapshot...) come first:
+        # a failure further down the list must not prevent refreshing what
+        # users actually pull.
         result.sort(key=lambda j: 0 if is_moving_job(j, live_depths) else 1)
-        result = apply_migration(result, known_tags, explicit_tags, live_depths)
+        migration_done = MIGRATION_MARKER in known_tags or not explicit_tags
+        result = plan_daily(result, known_tags, fingerprints or {}, live_depths, migration_done)
     for j in result:
         j.pop("_sort_key", None)
         j.pop("_exact_tag", None)
@@ -812,7 +845,7 @@ def build_jobs(loader_name, entries, mode, known_tags):
     return result
 
 
-def build_jobs_velocity(entries, mode, known_tags):
+def build_jobs_velocity(entries, mode, known_tags, fingerprints=None, deletes=None):
     """Velocity tags (no Minecraft version in the tags):
       latest / latest_latest      -> latest stable build of the highest version
       latest_experimental         -> latest non-stable build of that version (if any)
@@ -873,11 +906,10 @@ def build_jobs_velocity(entries, mode, known_tags):
     result = list(jobs.values())
     for j in result:
         j["tags"] = {sanitize_tag(t) for t in j["tags"]}
-    if mode == "daily":
-        result = [j for j in result if is_moving_job(j, live_depths) or any(t not in known_tags for t in j["tags"])]
     result.sort(key=lambda j: j["_sort_key"])
     if mode == "daily":
         result.sort(key=lambda j: 0 if is_moving_job(j, live_depths) else 1)
+        result = plan_daily(result, known_tags, fingerprints or {}, live_depths)
     for j in result:
         j.pop("_sort_key", None)
         j["tags"] = sorted(j["tags"])
@@ -888,29 +920,39 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--loader", required=True, choices=PROVIDERS.keys())
     ap.add_argument("--mode", default="daily", choices=["daily", "backfill"])
-    ap.add_argument("--state-file", default=None, help="text file listing the already published tags (one per line)")
+    ap.add_argument("--state-file", default=None,
+                    help="text file listing the already published tags, one per line: "
+                         "\"<tag>\" or \"<tag> <image fingerprint>\"")
     ap.add_argument("--limit", type=int, default=None, help="limits the number of returned jobs (backfill pagination)")
     ap.add_argument("--offset", type=int, default=0)
     args = ap.parse_args()
 
-    known_tags = set()
+    known_tags, fingerprints = set(), {}
     if args.state_file:
         try:
             with open(args.state_file, encoding="utf-8") as f:
-                known_tags = {l.strip() for l in f if l.strip()}
+                for line in f:
+                    parts = line.split()
+                    if not parts:
+                        continue
+                    known_tags.add(parts[0])
+                    if len(parts) > 1:
+                        fingerprints[parts[0]] = parts[1]
         except FileNotFoundError:
             pass
 
     entries = PROVIDERS[args.loader]()
+    deletes = []
     if args.loader == "velocity":
-        jobs = build_jobs_velocity(entries, args.mode, known_tags)
+        jobs = build_jobs_velocity(entries, args.mode, known_tags, fingerprints, deletes)
     else:
-        jobs = build_jobs(args.loader, entries, args.mode, known_tags)
+        jobs = build_jobs(args.loader, entries, args.mode, known_tags, fingerprints, deletes)
 
     if args.limit is not None:
         jobs = jobs[args.offset:args.offset + args.limit]
 
-    json.dump({"include": jobs}, sys.stdout)
+    # "delete": stale tags the build action removes from Docker Hub
+    json.dump({"include": jobs, "delete": deletes}, sys.stdout)
 
 
 if __name__ == "__main__":
