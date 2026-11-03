@@ -194,14 +194,21 @@ schedule or manually.
 
 1. `scripts/resolve_versions.py` reads the official API of the loader and
    lists every Minecraft version and every loader build.
-2. It compares the result with the tags already on Docker Hub and only keeps:
-   - jobs carrying a moving tag (`latest`, `snapshot`, `experimental`, and the
-     branch tags of the current branch such as `1`, `1.21`, `1.21-snapshot`);
-   - jobs with at least one tag that has never been published (a new
-     version, or a new loader build detected through the `<mc>_<loader>` tag).
-3. Images are built one at a time, moving tags first.
+2. It reads the tags already on Docker Hub, and for each tag the image it
+   points to (the per-architecture digests given by the Docker Hub API).
+3. An image that already exists (found through its `<mc>_<loader>` tag, or
+   `<mc>` for vanilla, bukkit and spigot) is **never rebuilt**: the tags that
+   are missing or point to another image are re-attached to it with
+   `docker buildx imagetools create`, which takes a few seconds. This is how
+   moving tags (`latest`, `1.21`, `snapshot`...) follow new versions, and how
+   tags left wrong by older versions of the scripts are repaired.
+4. Only the images that do not exist yet are built, one at a time, moving
+   tags first.
+5. Branch snapshot tags that are no longer produced (for example an old
+   `26-snapshot` that pointed to 1.18-pre8) are deleted from Docker Hub.
 
-Old versions whose tags no longer move are built once and then left alone.
+The run *Summary* shows how many images are built, how many tags are fixed
+and how many tags are deleted.
 
 ### Backfill mode (full history)
 
@@ -216,13 +223,13 @@ versions to skip):
 | 2 | 100 | 100 |
 | 3 | 100 | 200 |
 
-Keep going until a run reports 0 version to build. Bukkit and Spigot are
-compiled with BuildTools and are much slower than the other loaders: use
-smaller batches for them.
+Keep going until a run reports 0 version to build. Backfill always rebuilds
+the images it lists. Bukkit and Spigot are compiled with BuildTools and are
+much slower than the other loaders: use smaller batches for them.
 
 ### Failures
 
-- A failed version is retried once after 60 seconds.
+- A failed build or tag fix is retried once after 60 seconds.
 - If it fails again, the run goes on with the next versions; the job is
   marked as failed at the end and the run *Summary* lists the failed versions.
 - Set the `continue_on_error: "false"` input of the `build-loader` action to
@@ -237,9 +244,9 @@ not count against the Docker Hub pull quota.
 ### One-time tag migration
 
 Images built before the `<mc>_<loader>` tags existed do not have them. Until
-the marker tag `tag-scheme-v2` is published, the daily run adds those tags to
-the existing images (`docker buildx imagetools create`, no compilation)
-instead of rebuilding them. The marker is published only once every retag
+the marker tag `tag-scheme-v2` is published, the daily run finds those images
+through their exact `<mc>` tag and adds the missing tags to them (no
+compilation). The marker is published only once every one of those tag fixes
 succeeded; an interrupted migration resumes on the next daily run.
 
 ### Concurrency
@@ -263,7 +270,8 @@ on Docker Hub. It cannot be undone.
 
 1. Log in to <https://hub.docker.com> with the `minecraftserv` account.
 2. **Account Settings -> Personal access tokens**: create a token with
-   **Read, Write, Delete** permissions (*Delete* is needed by `reset`).
+   **Read, Write, Delete** permissions (*Delete* is needed to remove stale
+   tags and by `reset`).
 3. In this GitHub repository: **Settings -> Secrets and variables -> Actions**,
    add `DOCKERHUB_USERNAME` (`minecraftserv`) and `DOCKERHUB_TOKEN`.
 4. Create the 9 **public** repositories `minecraftserv/<loader>` (otherwise
@@ -275,9 +283,9 @@ on Docker Hub. It cannot be undone.
 docker/<loader>/Dockerfile          # one image per loader
 docker/<loader>/README.md           # documentation of that image
 entrypoint/entrypoint.sh            # shared entrypoint: fills /app, writes the EULA, starts run.sh
-scripts/resolve_versions.py         # reads the loader APIs, computes tags and build order
-.github/actions/resolve-versions/   # computes the build matrix of a loader
-.github/actions/build-loader/       # builds and pushes the matrix, one version at a time
+scripts/resolve_versions.py         # reads the loader APIs, computes tags, builds and tag fixes
+.github/actions/resolve-versions/   # reads Docker Hub and computes the build matrix of a loader
+.github/actions/build-loader/       # builds, fixes tags and deletes stale tags, one version at a time
 .github/actions/reset-images/       # deletes every Docker Hub tag of a loader (reset)
 .github/workflows/<loader>.yml      # daily schedule + manual run, per loader
 .github/workflows/builds.yml        # starts several loader workflows at once
