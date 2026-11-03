@@ -73,6 +73,12 @@ runs:
         BASE="public.ecr.aws/docker/library/eclipse-temurin"
 
         build_one() {
+          # Migration job (see apply_migration in resolve_versions.py): add
+          # the missing tags to an already published image, no compilation.
+          if [ -n "$retag_from" ]; then
+            docker buildx imagetools create "${tag_args[@]}" "minecraftserv/${LOADER}:${retag_from}"
+            return
+          fi
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             -f "docker/${LOADER}/Dockerfile" \
@@ -90,6 +96,7 @@ runs:
           mc_version=$(echo "$job" | jq -r '.mc_version')
           loader_version=$(echo "$job" | jq -r '.loader_version')
           java=$(echo "$job" | jq -r '.java')
+          retag_from=$(echo "$job" | jq -r '.retag_from // empty')
 
           case "$java" in
             8) java_build=${BASE}:8-jdk-jammy; java_runtime=${BASE}:8-jre-jammy ;;
@@ -110,7 +117,11 @@ runs:
 
           tags_display=$(echo "$job" | jq -r '.tags | join(", ")')
           echo ""
-          echo "[$i/$TOTAL] ${LOADER} ${mc_version} (loader ${loader_version}) -> ${tags_display}"
+          if [ -n "$retag_from" ]; then
+            echo "[$i/$TOTAL] ${LOADER} ${mc_version} : ajout de tag(s) sur l'image existante ${retag_from} -> ${tags_display}"
+          else
+            echo "[$i/$TOTAL] ${LOADER} ${mc_version} (loader ${loader_version}) -> ${tags_display}"
+          fi
 
           if build_one || { echo "::warning::Échec de ${LOADER} ${mc_version}, nouvel essai dans 60 s"; sleep 60; build_one; }; then
             ok=$((ok + 1))
