@@ -76,6 +76,12 @@ est **`_`** (underscore) — Docker n'autorise pas `:` dans un tag.
     reçoit plus les tags `1` ni `1.20`, seule `1.20.6` reçoit `1.20`. Ainsi
     un échec ou un ordre de build ne peut plus faire pointer `:1` vers une
     vieille version.
+  - Quand une version porte le même nom qu'une profondeur qui a des versions
+    plus récentes (Minecraft `1.20` alors que `1.20.6` existe), son tag
+    exact devient `1.20.0` (`1.20.0_latest`, `1.20.0_<loader>`…). Le tag nu
+    `1.20` reste le tag de profondeur, qui suit toujours la dernière 1.20.x :
+    reconstruire la 1.20 (par exemple pour un nouveau build de loader) ne
+    peut plus le ramener en arrière.
 - **Version de loader précise** : ajoutez `_<version-loader>` à n'importe
   quel tag de version Minecraft pour figer une version de loader précise,
   par exemple `1.21.2_40.1.80` (NeoForge) ou `1.21.2_9.6.0` (Fabric). Sans ce
@@ -253,6 +259,14 @@ Chaque jour, pour chaque loader :
    poussée avec tous ses tags sur `minecraftserv/<loader>`, tags mouvants
    d'abord. Une version en échec n'empêche pas les suivantes (voir
    « Ordre de build et gestion des échecs »).
+
+**Migration des tags `<mc>_<loader>`** : les images construites avant
+l'introduction de ces tags ne les ont pas. Tant que le tag repère
+`tag-scheme-v2` n'est pas publié sur Docker Hub, le premier daily ajoute ces
+tags sur les images existantes (`docker buildx imagetools create`, sans
+recompiler) au lieu de tout reconstruire. Seules les versions vraiment
+absentes sont compilées. Le tag `tag-scheme-v2` est ensuite porté par
+l'image `latest`, et la migration ne se relance plus jamais.
 
 > ⚠️ Un run GitHub Actions est limité à ~6h d'exécution (`timeout-minutes:
 > 350` dans chaque workflow). Un backfill complet de plusieurs centaines de

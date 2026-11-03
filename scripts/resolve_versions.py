@@ -491,6 +491,55 @@ def pick_loader_strict(loaders, channel):
     return cand[0] if cand else None
 
 
+def exact_tag_base(version, depth_owner_of):
+    """Tag used for an exact version. A version whose name is also a partial
+    depth owned by a higher version (MC "1.20" while 1.20.6 exists) would
+    otherwise share the bare "1.20" tag with that depth: rebuilding the old
+    version (e.g. for a new loader build) would then move "1.20" back to it.
+    Such versions use "<v>.0" instead ("1.20.0", "1.20.0_latest"...), and the
+    bare "1.20" stays the depth tag that follows the latest 1.20.x."""
+    owner = depth_owner_of(version)
+    if owner is not None and owner != version:
+        return f"{version}.0"
+    return version
+
+
+# Marker tag published once the explicit "<v>_<loader>" tags exist (it is
+# carried by the "latest" image and by the migration retags). Its presence
+# on Docker Hub means the migration below is done and must never run again:
+# otherwise a new loader build would be mistaken for a missing migration.
+MIGRATION_MARKER = "tag-scheme-v2"
+
+
+def apply_migration(result, known_tags, explicit_tags, live_depths):
+    """One-time migration of the explicit "<v>_<loader>" tags.
+
+    Images built before these tags existed only carry "<v>", "<v>_latest"...
+    Without a migration, every one of them would look new and the first
+    daily run would rebuild the whole history. While MIGRATION_MARKER is not
+    published yet (= migration not done), a job whose
+    only missing tags are explicit ones, and whose exact tag already exists,
+    is turned into a retag job: the build step then adds the missing tags to
+    the existing image (docker buildx imagetools create) instead of
+    compiling. Versions that are really missing are still built. Retag jobs
+    come first so a failure later in the run cannot leave the migration
+    half done."""
+    if MIGRATION_MARKER in known_tags or not explicit_tags:
+        return result
+    retags, others = [], []
+    for j in result:
+        missing = {t for t in j["tags"] if t not in known_tags}
+        key = (j["mc_version"], j["loader_version"])
+        explicit = explicit_tags.get(key)
+        src = j.get("_exact_tag")
+        if (explicit and missing == {explicit} and src in known_tags
+                and not is_moving_job(j, live_depths)):
+            retags.append(dict(j, tags={explicit, MIGRATION_MARKER}, retag_from=src))
+        else:
+            others.append(j)
+    return retags + others
+
+
 MOVING_GLOBAL = ("latest", "snapshot", "experimental")
 MOVING_SUFFIXES = ("-latest", "-snapshot", "-experimental")
 
@@ -558,6 +607,7 @@ def build_jobs(loader_name, entries, mode, known_tags):
 
     global_latest_mc = by_channel["latest"][0] if by_channel["latest"] else None
     live_depths = set(depth_tags(global_latest_mc["mc_version"])) if global_latest_mc else set()
+    explicit_tags = {}  # (mc, default loader) -> "<base>_<loader>", for the migration
     global_snapshot_mc = by_channel["snapshot"][0] if by_channel["snapshot"] else None
     global_experimental_mc = by_channel["experimental"][0] if by_channel["experimental"] else None
 
@@ -569,7 +619,8 @@ def build_jobs(loader_name, entries, mode, known_tags):
             continue
 
         # --- exact tag without a loader version = latest loader for this mc version
-        tags = {mc}
+        base = exact_tag_base(mc, lambda v: depth_owner.get(v, (None, None))[1])
+        tags = {base}
         # --- depths (only for purely numeric mc versions, release channel)
         depths = depth_tags(mc) if e["mc_channel"] == "latest" else []
         # the exact tag (full depth) always stays on its own version;
@@ -580,39 +631,44 @@ def build_jobs(loader_name, entries, mode, known_tags):
             tags.add(d)
             tags.add(f"{d}-latest")
 
+        if base != mc:
+            tags.add(f"{base}-latest")
+
         add_job(mc, default_loader["id"], e["java"], tags, default_loader["build_args"], job_sort_key(e, default_loader["id"]))
+        jobs[(mc, default_loader["id"])]["_exact_tag"] = base
 
         # --- loader-side channel keywords: "<mc>_latest" (alias of the bare
         # tag) and "<mc>_experimental" when an experimental loader build
         # actually exists for this Minecraft version.
-        add_job(mc, default_loader["id"], e["java"], {f"{mc}{SEP}latest"}, default_loader["build_args"], job_sort_key(e, default_loader["id"]))
+        add_job(mc, default_loader["id"], e["java"], {f"{base}{SEP}latest"}, default_loader["build_args"], job_sort_key(e, default_loader["id"]))
         # explicit "<mc>_<loader>" tag on the default loader (except vanilla,
         # where loader == MC version): this is what triggers a daily rebuild
         # when a new loader build comes out for an existing MC version.
         if loader_name != "vanilla" and default_loader["id"] != mc:
-            add_job(mc, default_loader["id"], e["java"], {f"{mc}{SEP}{default_loader['id']}"}, default_loader["build_args"], job_sort_key(e, default_loader["id"]))
+            explicit_tags[(mc, default_loader["id"])] = sanitize_tag(f"{base}{SEP}{default_loader['id']}")
+            add_job(mc, default_loader["id"], e["java"], {f"{base}{SEP}{default_loader['id']}"}, default_loader["build_args"], job_sort_key(e, default_loader["id"]))
         exp_keyword_loader = pick_loader_strict(loaders, "experimental")
         if exp_keyword_loader:
-            add_job(mc, exp_keyword_loader["id"], e["java"], {f"{mc}{SEP}experimental"}, exp_keyword_loader["build_args"], job_sort_key(e, exp_keyword_loader["id"]))
+            add_job(mc, exp_keyword_loader["id"], e["java"], {f"{base}{SEP}experimental"}, exp_keyword_loader["build_args"], job_sort_key(e, exp_keyword_loader["id"]))
 
         # --- explicit loader version variants: mc_loader
         if mode == "backfill":
             for l in loaders:
                 if l is default_loader:
                     continue
-                add_job(mc, l["id"], e["java"], {f"{mc}{SEP}{l['id']}"}, l["build_args"], job_sort_key(e, l["id"]))
+                add_job(mc, l["id"], e["java"], {f"{base}{SEP}{l['id']}"}, l["build_args"], job_sort_key(e, l["id"]))
         # in daily mode, limited to the most recent "latest"/"experimental" loaders
         elif mode == "daily":
             exp_loader = pick_default_loader(loaders, "experimental")
             if exp_loader and exp_loader is not default_loader:
-                add_job(mc, exp_loader["id"], e["java"], {f"{mc}{SEP}{exp_loader['id']}"}, exp_loader["build_args"], job_sort_key(e, exp_loader["id"]))
+                add_job(mc, exp_loader["id"], e["java"], {f"{base}{SEP}{exp_loader['id']}"}, exp_loader["build_args"], job_sort_key(e, exp_loader["id"]))
 
     # --- moving global tags: latest / snapshot / experimental
     if global_latest_mc:
         e = global_latest_mc
         dl = pick_default_loader(e["loaders"], "latest")
         if dl:
-            add_job(e["mc_version"], dl["id"], e["java"], {"latest", f"latest{SEP}latest"}, dl["build_args"], job_sort_key(e, dl["id"]))
+            add_job(e["mc_version"], dl["id"], e["java"], {"latest", f"latest{SEP}latest", MIGRATION_MARKER}, dl["build_args"], job_sort_key(e, dl["id"]))
         exp = pick_loader_strict(e["loaders"], "experimental")
         if exp:
             add_job(e["mc_version"], exp["id"], e["java"], {f"latest{SEP}experimental"}, exp["build_args"], job_sort_key(e, exp["id"]))
@@ -649,6 +705,8 @@ def build_jobs(loader_name, entries, mode, known_tags):
     result = list(jobs.values())
     for j in result:
         j["tags"] = {sanitize_tag(t) for t in j["tags"]}
+        if "_exact_tag" in j:
+            j["_exact_tag"] = sanitize_tag(j["_exact_tag"])
 
     if mode == "daily":
         # only keep jobs that touch at least one never-published tag, or a
@@ -666,8 +724,10 @@ def build_jobs(loader_name, entries, mode, known_tags):
         # snapshot...) come first: a failure further down the list must not
         # prevent refreshing what users actually pull.
         result.sort(key=lambda j: 0 if is_moving_job(j, live_depths) else 1)
+        result = apply_migration(result, known_tags, explicit_tags, live_depths)
     for j in result:
         j.pop("_sort_key", None)
+        j.pop("_exact_tag", None)
         j["tags"] = sorted(j["tags"])
     return result
 
@@ -711,7 +771,8 @@ def build_jobs_velocity(entries, mode, known_tags):
         v = e["mc_version"]
         dl = pick_default_loader(e["loaders"], "latest")
         exp = pick_loader_strict(e["loaders"], "experimental")
-        tags = {v, f"{v}{SEP}latest", f"{v}{SEP}{dl['id']}"}
+        b = exact_tag_base(v, depth_owner.get)
+        tags = {b, f"{b}{SEP}latest", f"{b}{SEP}{dl['id']}"}
         for d, owner in depth_owner.items():
             if owner == v:
                 tags.update({d, f"{d}-latest"})
@@ -721,13 +782,13 @@ def build_jobs_velocity(entries, mode, known_tags):
             tags.update({"snapshot", f"snapshot{SEP}latest"})
         add_job(v, dl, tags)
         if exp:
-            etags = {f"{v}{SEP}experimental", f"{v}{SEP}{exp['id']}"}
+            etags = {f"{b}{SEP}experimental", f"{b}{SEP}{exp['id']}"}
             if v == top:
                 etags.update({"experimental", f"latest{SEP}experimental"})
             add_job(v, exp, etags)
         if mode == "backfill":
             for l in e["loaders"]:
-                add_job(v, l, {f"{v}{SEP}{l['id']}"})
+                add_job(v, l, {f"{b}{SEP}{l['id']}"})
 
     result = list(jobs.values())
     for j in result:
