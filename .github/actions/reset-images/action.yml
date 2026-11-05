@@ -1,11 +1,12 @@
 name: Reset des images Docker Hub d'un loader
 description: >
-  Supprime TOUTES les images publiées sur minecraftserv/<loader> : chaque tag
-  est effacé, puis chaque manifest qu'il désignait (index multi-arch, puis
-  manifests par plateforme et attestations) est supprimé par digest via l'API
-  du registry. Le repository Docker Hub lui-même est conservé. Utile en phase
-  de test pour repartir de zéro. Nécessite un Access Token Docker Hub avec les
-  droits Read, Write, Delete.
+  Supprime TOUTES les images publiées sur minecraftserv/<loader> : l'inventaire
+  des tags et des digests se fait via l'API du registry (la même que docker
+  push), puis chaque tag est effacé et chaque manifest qu'il désignait (index
+  multi-arch, manifests par plateforme, attestations) est supprimé par digest.
+  Le repository Docker Hub lui-même est conservé. Utile en phase de test pour
+  repartir de zéro. Nécessite un Access Token Docker Hub avec les droits Read,
+  Write, Delete.
 
 inputs:
   loader:
@@ -29,47 +30,40 @@ runs:
         NS="minecraftserv"
         REPO="${NS}/${LOADER}"
         HUB="https://hub.docker.com/v2"
-        REG="https://registry-1.docker.io/v2/${REPO}"
+        REG_HOST="https://registry-1.docker.io"
+        REG="${REG_HOST}/v2/${REPO}"
+        UA="MinecraftServ-builder-reset/1.0"
         # Every manifest type buildx can push: OCI/Docker index (multi-arch),
         # then single-platform manifests (also used for attestations).
         ACCEPT="application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
         WORK=$(mktemp -d)
-        : > "$WORK/tags.tsv"; : > "$WORK/index"; : > "$WORK/children"
+        : > "$WORK/tags"; : > "$WORK/index"; : > "$WORK/children"
 
         # HTTP helper: never exits on its own (no curl -f), leaves the status
-        # in HTTP_CODE and the body in $WORK/body, so every failure can be
-        # reported with its code and the API's message.
+        # in HTTP_CODE, the body in $WORK/body and the headers in
+        # $WORK/headers, so every failure is reported with the API's message.
         HTTP_CODE=""
         http() {
           local method=$1 url=$2 token=${3:-}
-          local args=(-sS -o "$WORK/body" -w '%{http_code}' -X "$method")
+          local args=(-sS -A "$UA" -o "$WORK/body" -D "$WORK/headers" -w '%{http_code}')
+          # curl -X HEAD waits for a body that never comes: use -I instead.
+          if [ "$method" = "HEAD" ]; then args+=(-I); else args+=(-X "$method"); fi
           [ -n "$token" ] && args+=(-H "Authorization: Bearer ${token}")
           [ -n "${HTTP_ACCEPT:-}" ] && args+=(-H "Accept: ${HTTP_ACCEPT}")
-          : > "$WORK/body"
+          : > "$WORK/body"; : > "$WORK/headers"
           HTTP_CODE=$(curl "${args[@]}" "$url" 2>"$WORK/curl.err" || true)
           [ -n "$HTTP_CODE" ] || HTTP_CODE=000
         }
         body() { head -c 300 "$WORK/body" 2>/dev/null | tr '\n' ' '; cat "$WORK/curl.err" 2>/dev/null | tr '\n' ' '; }
+        header() { grep -i "^$1:" "$WORK/headers" | head -n1 | cut -d' ' -f2- | tr -d '\r' || true; }
         die() { echo "::error::$1 (HTTP ${HTTP_CODE}) : $(body)"; exit 1; }
-
-        echo "== Authentification Docker Hub API =="
-        # Documented route (POST /v2/auth/token), then the legacy one.
-        HUB_TOKEN=$(curl -sS -X POST "${HUB}/auth/token" -H "Content-Type: application/json" \
-          -d "$(jq -nc --arg i "$DH_USER" --arg s "$DH_TOKEN" '{identifier: $i, secret: $s}')" \
-          | jq -r '.access_token // empty' 2>/dev/null || true)
-        if [ -z "$HUB_TOKEN" ]; then
-          HUB_TOKEN=$(curl -sS -X POST "${HUB}/users/login/" -H "Content-Type: application/json" \
-            -d "$(jq -nc --arg u "$DH_USER" --arg p "$DH_TOKEN" '{username: $u, password: $p}')" \
-            | jq -r '.token // empty' 2>/dev/null || true)
-        fi
-        [ -n "$HUB_TOKEN" ] || { HTTP_CODE="-"; die "Impossible de s'authentifier auprès de l'API Docker Hub avec le token fourni"; }
 
         # Registry tokens (auth.docker.io) only last ~60 s: renewed every 45 s.
         REG_TOKEN=""
         REG_TOKEN_AT=-1000
         refresh_token() {
           if [ $((SECONDS - REG_TOKEN_AT)) -ge 45 ]; then
-            HTTP_CODE=$(curl -sS -o "$WORK/body" -w '%{http_code}' -u "${DH_USER}:${DH_TOKEN}" \
+            HTTP_CODE=$(curl -sS -A "$UA" -o "$WORK/body" -w '%{http_code}' -u "${DH_USER}:${DH_TOKEN}" \
               "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${REPO}:pull,push,delete" 2>"$WORK/curl.err" || true)
             REG_TOKEN=$(jq -r '.token // .access_token // empty' "$WORK/body" 2>/dev/null || true)
             [ -n "$REG_TOKEN" ] || die "Token registry (pull,push,delete) refusé pour ${REPO}"
@@ -77,50 +71,50 @@ runs:
           fi
         }
 
-        # 1. Full tag list BEFORE deleting anything (deleting while paging
-        #    shifts the remaining tags and skips some). The tag list already
-        #    gives the digest of each tag (index) and of its platform images.
-        echo "== Inventaire des tags de ${REPO} =="
-        url="${HUB}/namespaces/${NS}/repositories/${LOADER}/tags?page_size=100"
-        token="$HUB_TOKEN"
-        while [ -n "$url" ]; do
-          http GET "$url" "$token"
-          if [ "$HTTP_CODE" != "200" ] && [ -n "$token" ]; then
-            # Seen in CI: 404 on this listing with the Hub token, while the
-            # public repository answers 200 without authentication.
-            echo "::warning::Listing authentifié refusé (HTTP ${HTTP_CODE} : $(body)), nouvel essai sans authentification."
-            token=""
-            continue
-          fi
-          [ "$HTTP_CODE" = "200" ] || die "Impossible de lister les tags de ${REPO}"
-          jq -r '.results[]? | [.name, (.digest // "")] | @tsv' "$WORK/body" >> "$WORK/tags.tsv"
-          jq -r '.results[]?.images[]?.digest // empty' "$WORK/body" >> "$WORK/children"
-          url=$(jq -r '.next // empty' "$WORK/body")
-        done
-        n_tags=$(grep -c . "$WORK/tags.tsv" || true)
+        # Tag list through the registry API (the one docker push uses):
+        # the Hub API answered 404 "object not found" from the runners, with
+        # and without authentication, for repositories that do exist.
+        list_tags() {
+          : > "$1"
+          local url="${REG}/tags/list?n=1000"
+          while [ -n "$url" ]; do
+            refresh_token
+            http GET "$url" "$REG_TOKEN"
+            [ "$HTTP_CODE" = "200" ] || die "Impossible de lister les tags de ${REPO} via le registry"
+            jq -r '.tags[]? // empty' "$WORK/body" >> "$1"
+            # Pagination: Link: </v2/<repo>/tags/list?n=1000&last=...>; rel="next"
+            local next
+            next=$(header link | sed -n 's/^<\([^>]*\)>.*rel="next".*/\1/p')
+            url=""
+            if [ -n "$next" ]; then url="${REG_HOST}${next}"; fi
+          done
+          sed -i '/^$/d' "$1"
+        }
+
+        echo "== Inventaire des tags de ${REPO} (registry) =="
+        list_tags "$WORK/tags"
+        n_tags=$(wc -l < "$WORK/tags")
         echo "${n_tags} tag(s) trouvé(s)"
         if [ "$n_tags" -eq 0 ]; then
           echo "### 🗑️ Reset ${REPO} : aucun tag, rien à supprimer" >> "$GITHUB_STEP_SUMMARY"
           exit 0
         fi
 
-        # 2. Digests: the index of each tag, plus the manifests it references
-        #    (platforms, and buildx attestations that the tag list omits).
+        # Digest of each tag (index for multi-arch images), then the
+        # manifests it references (platforms + buildx attestations).
         echo "== Résolution des digests =="
         resolve_failed=0
-        while IFS=$'\t' read -r tag digest; do
-          if [ -z "$digest" ]; then
-            refresh_token
-            digest=$(curl -sSI -H "Authorization: Bearer ${REG_TOKEN}" -H "Accept: ${ACCEPT}" \
-              "${REG}/manifests/${tag}" | grep -i '^docker-content-digest:' | awk '{print $2}' | tr -d '\r' || true)
-          fi
-          if [ -z "$digest" ]; then
-            echo "::warning::Digest introuvable pour le tag ${tag} (son image ne sera pas supprimée)."
+        while IFS= read -r tag; do
+          refresh_token
+          HTTP_ACCEPT="$ACCEPT" http HEAD "${REG}/manifests/${tag}" "$REG_TOKEN"
+          digest=$(header docker-content-digest)
+          if [ "$HTTP_CODE" != "200" ] || [ -z "$digest" ]; then
+            echo "::warning::Digest introuvable pour le tag ${tag} (HTTP ${HTTP_CODE}) : son image ne sera pas supprimée."
             resolve_failed=$((resolve_failed + 1))
             continue
           fi
           echo "$digest" >> "$WORK/index"
-        done < "$WORK/tags.tsv"
+        done < "$WORK/tags"
         sort -u "$WORK/index" -o "$WORK/index"
         while IFS= read -r d; do
           refresh_token
@@ -128,29 +122,45 @@ runs:
           if [ "$HTTP_CODE" = "200" ]; then
             jq -r '.manifests[]?.digest // empty' "$WORK/body" >> "$WORK/children" || true
           else
-            echo "::warning::Manifest ${d} illisible (HTTP ${HTTP_CODE}) : ses attestations éventuelles ne seront pas supprimées."
+            echo "::warning::Manifest ${d} illisible (HTTP ${HTTP_CODE}) : ses manifests enfants ne seront pas supprimés."
           fi
         done < "$WORK/index"
         sort -u "$WORK/children" | grep -vxF -f "$WORK/index" > "$WORK/children.u" || true
+        echo "$(wc -l < "$WORK/index") index et $(wc -l < "$WORK/children.u") manifest(s) enfant(s) à supprimer"
 
-        # 3. Tags: a manifest can only be deleted once no tag points to it.
-        echo "== Suppression des tags =="
-        tags_ok=0; tags_failed=0
-        while IFS=$'\t' read -r tag _; do
-          http DELETE "${HUB}/repositories/${REPO}/tags/${tag}/" "$HUB_TOKEN"
-          case "$HTTP_CODE" in
-            2*) tags_ok=$((tags_ok + 1)) ;;
-            *) echo "::warning::Tag ${tag} non supprimé (HTTP ${HTTP_CODE}) : $(body)"; tags_failed=$((tags_failed + 1)) ;;
-          esac
-        done < "$WORK/tags.tsv"
-        if [ "$tags_failed" -gt 0 ]; then
-          echo "::error::${tags_failed}/${n_tags} tag(s) non supprimé(s) : les images restent en place (un manifest tagué ne peut pas être supprimé)."
-          echo "### ❌ Reset ${REPO} : ${tags_failed}/${n_tags} tag(s) non supprimé(s), images conservées" >> "$GITHUB_STEP_SUMMARY"
-          exit 1
+        # Tags through the Hub API (the registry cannot untag). If the Hub
+        # API refuses, the manifests are deleted anyway: the final check
+        # below tells whether the tags went with them.
+        echo "== Suppression des tags (API Hub) =="
+        HUB_TOKEN=$(curl -sS -A "$UA" -X POST "${HUB}/auth/token" -H "Content-Type: application/json" \
+          -d "$(jq -nc --arg i "$DH_USER" --arg s "$DH_TOKEN" '{identifier: $i, secret: $s}')" \
+          | jq -r '.access_token // empty' 2>/dev/null || true)
+        if [ -z "$HUB_TOKEN" ]; then
+          HUB_TOKEN=$(curl -sS -A "$UA" -X POST "${HUB}/users/login/" -H "Content-Type: application/json" \
+            -d "$(jq -nc --arg u "$DH_USER" --arg p "$DH_TOKEN" '{username: $u, password: $p}')" \
+            | jq -r '.token // empty' 2>/dev/null || true)
         fi
+        tags_ok=0; tags_failed=0
+        if [ -z "$HUB_TOKEN" ]; then
+          echo "::warning::Authentification à l'API Hub impossible : les tags ne sont pas supprimés un par un."
+          tags_failed=$n_tags
+        else
+          while IFS= read -r tag; do
+            http DELETE "${HUB}/repositories/${REPO}/tags/${tag}/" "$HUB_TOKEN"
+            case "$HTTP_CODE" in
+              2*) tags_ok=$((tags_ok + 1)) ;;
+              *)
+                tags_failed=$((tags_failed + 1))
+                # Only the first refusals are shown, to keep the log readable.
+                if [ "$tags_failed" -le 3 ]; then echo "::warning::Tag ${tag} non supprimé (HTTP ${HTTP_CODE}) : $(body)"; fi
+                ;;
+            esac
+          done < "$WORK/tags"
+        fi
+        echo "${tags_ok}/${n_tags} tag(s) supprimé(s) via l'API Hub"
 
-        # 4. Manifests by digest: indexes first (which frees their
-        #    children), then platform manifests and attestations.
+        # Manifests by digest: indexes first (which frees their children),
+        # then platform manifests and attestations.
         echo "== Suppression des images (manifests) =="
         img_ok=0; img_bg=0; img_failed=0
         delete_manifest() {
@@ -160,21 +170,28 @@ runs:
             200|202|204|404) img_ok=$((img_ok + 1)) ;;
             # Documented: the deletion is retried by Docker Hub in the background.
             500) img_bg=$((img_bg + 1)) ;;
-            *) echo "::warning::Manifest $1 non supprimé (HTTP ${HTTP_CODE}) : $(body)"; img_failed=$((img_failed + 1)) ;;
+            *)
+              img_failed=$((img_failed + 1))
+              if [ "$img_failed" -le 3 ]; then echo "::warning::Manifest $1 non supprimé (HTTP ${HTTP_CODE}) : $(body)"; fi
+              ;;
           esac
+          return 0
         }
-        while IFS= read -r d; do [ -n "$d" ] && delete_manifest "$d"; done < "$WORK/index"
-        while IFS= read -r d; do [ -n "$d" ] && delete_manifest "$d"; done < "$WORK/children.u"
+        while IFS= read -r d; do if [ -n "$d" ]; then delete_manifest "$d"; fi; done < "$WORK/index"
+        while IFS= read -r d; do if [ -n "$d" ]; then delete_manifest "$d"; fi; done < "$WORK/children.u"
 
-        summary="Reset ${REPO} : ${tags_ok}/${n_tags} tag(s) et ${img_ok} manifest(s) supprimé(s)"
-        if [ "$img_bg" -gt 0 ]; then
-          summary="${summary}, ${img_bg} suppression(s) poursuivie(s) en arrière-plan par Docker Hub"
-        fi
+        # Final check, through the registry: what is really left.
+        echo "== Vérification =="
+        list_tags "$WORK/left"
+        left=$(wc -l < "$WORK/left")
+
+        summary="Reset ${REPO} : ${img_ok} manifest(s) supprimé(s)"
+        if [ "$img_bg" -gt 0 ]; then summary="${summary} (+${img_bg} en cours côté Docker Hub)"; fi
+        summary="${summary}, ${tags_ok}/${n_tags} tag(s) supprimé(s) via l'API Hub, ${left} tag(s) restant(s)"
         echo "== ${summary} =="
         echo "### 🗑️ ${summary}" >> "$GITHUB_STEP_SUMMARY"
 
-        if [ "$img_failed" -gt 0 ] || [ "$resolve_failed" -gt 0 ]; then
-          echo "::error::Reset incomplet : ${img_failed} manifest(s) et ${resolve_failed} digest(s) en échec."
-          echo "### ❌ Reset incomplet : ${img_failed} manifest(s), ${resolve_failed} digest(s) en échec" >> "$GITHUB_STEP_SUMMARY"
+        if [ "$left" -gt 0 ] || [ "$img_failed" -gt 0 ] || [ "$resolve_failed" -gt 0 ]; then
+          echo "::error::Reset incomplet : ${left} tag(s) restant(s), ${img_failed} manifest(s) et ${resolve_failed} digest(s) en échec."
           exit 1
         fi
