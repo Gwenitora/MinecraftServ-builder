@@ -25,6 +25,8 @@ RUN curl -fsSL -o installer.jar "$INSTALLER_URL"
 # installer downloads a versioned name (minecraft_server.X.jar): a generic
 # link is created so the jar's classpath can find it (otherwise:
 # "Could not find or load main class net.minecraft.server.MinecraftServer").
+# The early builds for 1.20.3 (49.0.x) use the "shim" launcher instead: no
+# run.sh, but a "forge-<mc>-<loader>-shim.jar" runnable with -jar.
 RUN set -eux; \
     java -jar installer.jar --installServer; \
     rm -f installer.jar installer.jar.log; \
@@ -43,8 +45,11 @@ RUN set -eux; \
         printf '#!/bin/sh\nexec java $JAVA_OPTS -jar %s nogui "$@"\n' "$JAR" > run.sh; \
     elif [ -f "forge-${MC_VERSION}-${LOADER_VERSION}.jar" ]; then \
         printf '#!/bin/sh\nexec java $JAVA_OPTS -jar forge-%s-%s.jar nogui "$@"\n' "${MC_VERSION}" "${LOADER_VERSION}" > run.sh; \
+    elif [ -f "forge-${MC_VERSION}-${LOADER_VERSION}-shim.jar" ]; then \
+        printf '#!/bin/sh\nexec java $JAVA_OPTS -jar forge-%s-%s-shim.jar nogui "$@"\n' "${MC_VERSION}" "${LOADER_VERSION}" > run.sh; \
     else \
         echo "Impossible de déterminer le script de lancement Forge pour ${MC_VERSION}-${LOADER_VERSION}" >&2; \
+        ls -la >&2; \
         exit 1; \
     fi; \
     chmod +x run.sh
