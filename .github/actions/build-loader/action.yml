@@ -9,7 +9,7 @@ description: >
 
 inputs:
   loader:
-    description: "vanilla | bukkit | spigot | paper | forge | neoforge | fabric | quilt"
+    description: "vanilla | bukkit | spigot | paper | forge | neoforge | fabric | quilt | velocity"
     required: true
   matrix_file:
     description: 'Chemin vers le fichier JSON {"include": [...]} (sortie de resolve-versions), lu directement sur disque pour éviter toute limite de taille des variables d''environnement/outputs GitHub Actions'
@@ -54,6 +54,8 @@ runs:
         LOADER: ${{ inputs.loader }}
         MATRIX_FILE: ${{ inputs.matrix_file }}
         CONTINUE_ON_ERROR: ${{ inputs.continue_on_error }}
+        DH_USER: ${{ inputs.dockerhub_username }}
+        DH_TOKEN: ${{ inputs.dockerhub_token }}
       run: |
         set -euo pipefail
         # The JSON is read directly from the file on disk (never through an
@@ -151,6 +153,30 @@ runs:
           # ~14 GB free) never triggered the purge.
           docker buildx prune -f --keep-storage 4GB >/dev/null 2>&1 || true
         done < /tmp/jobs.ndjson
+
+        # Stale tags listed by the resolver (e.g. an old "26-snapshot" that
+        # pointed to an unrelated version): deleted through the Docker Hub API.
+        mapfile -t stale < <(jq -r '(.delete // [])[]' "$MATRIX_FILE")
+        if [ ${#stale[@]} -gt 0 ]; then
+          echo ""
+          echo "== Suppression de ${#stale[@]} tag(s) obsolète(s) =="
+          JWT=$(curl -fsSL -X POST "https://hub.docker.com/v2/users/login/" \
+            -H "Content-Type: application/json" \
+            -d "{\"username\": \"${DH_USER}\", \"password\": \"${DH_TOKEN}\"}" | jq -r '.token' || true)
+          if [ -z "$JWT" ] || [ "$JWT" = "null" ]; then
+            echo "::warning::Connexion à l'API Docker Hub impossible : tags obsolètes non supprimés."
+          else
+            for t in "${stale[@]}"; do
+              if curl -fsS -o /dev/null -X DELETE -H "Authorization: Bearer ${JWT}" \
+                "https://hub.docker.com/v2/repositories/minecraftserv/${LOADER}/tags/${t}/"; then
+                echo "  - supprimé : ${t}"
+              else
+                echo "::warning::Impossible de supprimer le tag ${t}"
+              fi
+            done
+            echo "### 🗑️ ${#stale[@]} tag(s) obsolète(s) supprimé(s) : ${stale[*]}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+        fi
 
         if [ ${#failed[@]} -gt 0 ]; then
           {

@@ -6,10 +6,10 @@ description: >
 
 inputs:
   loader:
-    description: "vanilla | bukkit | spigot | paper | forge | neoforge | fabric | quilt"
+    description: "vanilla | bukkit | spigot | paper | forge | neoforge | fabric | quilt | velocity"
     required: true
   mode:
-    description: "daily (versions nouvelles + tags mouvants) | backfill (historique complet)"
+    description: "daily (images manquantes + correction des tags) | backfill (historique complet)"
     required: false
     default: daily
   limit:
@@ -26,7 +26,7 @@ outputs:
     description: "Chemin (dans le workspace) du fichier JSON contenant la matrix"
     value: ${{ steps.build-matrix.outputs.matrix_file }}
   count:
-    description: "Nombre de jobs à construire"
+    description: "Nombre de jobs à construire + nombre de tags à supprimer"
     value: ${{ steps.build-matrix.outputs.count }}
 
 runs:
@@ -36,13 +36,18 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        # One line per tag: "<tag> <fingerprint>". The fingerprint is the
+        # sorted list of the per-architecture manifest digests of the image
+        # the tag points to: it does not change when a tag is re-attached
+        # with imagetools, so the resolver can tell whether a tag points to
+        # the right image.
         : > known_tags.txt
         page=1
         while :; do
           resp=$(curl -fsSL "https://hub.docker.com/v2/repositories/minecraftserv/${{ inputs.loader }}/tags?page_size=100&page=${page}" || echo '{}')
-          names=$(echo "$resp" | jq -r '.results[]?.name' || true)
-          [ -z "$names" ] && break
-          echo "$names" >> known_tags.txt
+          lines=$(echo "$resp" | jq -r '.results[]? | "\(.name) \(((.images // []) | map(.digest // empty) | sort | join(",")) as $f | if $f == "" then (.digest // "") else $f end)"' || true)
+          [ -z "$lines" ] && break
+          echo "$lines" >> known_tags.txt
           next=$(echo "$resp" | jq -r '.next // empty')
           [ -z "$next" ] && break
           page=$((page + 1))
@@ -59,7 +64,9 @@ runs:
           ARGS="$ARGS --limit ${{ inputs.limit }} --offset ${{ inputs.offset }}"
         fi
         python3 scripts/resolve_versions.py $ARGS > matrix.json
-        COUNT=$(jq '.include | length' matrix.json)
-        echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+        BUILDS=$(jq '[.include[] | select(.retag_from == null)] | length' matrix.json)
+        RETAGS=$(jq '[.include[] | select(.retag_from != null)] | length' matrix.json)
+        DELETES=$(jq '(.delete // []) | length' matrix.json)
+        echo "count=$((BUILDS + RETAGS + DELETES))" >> "$GITHUB_OUTPUT"
         echo "matrix_file=matrix.json" >> "$GITHUB_OUTPUT"
-        echo "### ${{ inputs.loader }} (${{ inputs.mode }}): $COUNT job(s) à construire" >> "$GITHUB_STEP_SUMMARY"
+        echo "### ${{ inputs.loader }} (${{ inputs.mode }}): ${BUILDS} image(s) à construire, ${RETAGS} correction(s) de tags, ${DELETES} tag(s) obsolète(s) à supprimer" >> "$GITHUB_STEP_SUMMARY"
