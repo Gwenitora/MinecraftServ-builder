@@ -1,9 +1,11 @@
 name: Reset des images Docker Hub d'un loader
 description: >
-  Supprime TOUS les tags déjà publiés sur minecraftserv/<loader> (repository
-  Docker Hub conservé, seuls les tags sont effacés). Utile en phase de test
-  pour repartir de zéro. Nécessite un Access Token Docker Hub avec droits
-  d'écriture/suppression.
+  Supprime TOUTES les images publiées sur minecraftserv/<loader> : chaque tag
+  est effacé, puis chaque manifest qu'il désignait (index multi-arch, puis
+  manifests par plateforme et attestations) est supprimé par digest via l'API
+  du registry. Le repository Docker Hub lui-même est conservé. Utile en phase
+  de test pour repartir de zéro. Nécessite un Access Token Docker Hub avec les
+  droits Read, Write, Delete.
 
 inputs:
   loader:
@@ -16,7 +18,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Supprimer tous les tags existants
+    - name: Supprimer toutes les images existantes
       shell: bash
       env:
         LOADER: ${{ inputs.loader }}
@@ -24,34 +26,111 @@ runs:
         DH_TOKEN: ${{ inputs.dockerhub_token }}
       run: |
         set -euo pipefail
+        REPO="minecraftserv/${LOADER}"
+        HUB="https://hub.docker.com/v2/repositories/${REPO}"
+        REG="https://registry-1.docker.io/v2/${REPO}"
+        # Every manifest type buildx can push: OCI/Docker index (multi-arch),
+        # then single-platform manifests (also used for attestations).
+        ACCEPT="application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
+
         echo "== Authentification Docker Hub API =="
         JWT=$(curl -fsSL -X POST "https://hub.docker.com/v2/users/login/" \
           -H "Content-Type: application/json" \
           -d "{\"username\": \"${DH_USER}\", \"password\": \"${DH_TOKEN}\"}" | jq -r '.token')
-
         if [ -z "$JWT" ] || [ "$JWT" = "null" ]; then
           echo "::error::Impossible de s'authentifier auprès de l'API Docker Hub avec le token fourni."
           exit 1
         fi
 
-        echo "== Suppression de tous les tags de minecraftserv/${LOADER} =="
-        page=1
-        deleted=0
-        while :; do
-          resp=$(curl -fsSL -H "Authorization: Bearer ${JWT}" \
-            "https://hub.docker.com/v2/repositories/minecraftserv/${LOADER}/tags?page_size=100&page=${page}" || echo '{}')
-          names=$(echo "$resp" | jq -r '.results[]?.name' || true)
-          [ -z "$names" ] && break
-          while IFS= read -r tag; do
-            [ -z "$tag" ] && continue
-            echo "  - suppression du tag: $tag"
-            curl -fsSL -X DELETE -H "Authorization: Bearer ${JWT}" \
-              "https://hub.docker.com/v2/repositories/minecraftserv/${LOADER}/tags/${tag}/" >/dev/null || true
-            deleted=$((deleted + 1))
-          done <<< "$names"
-          next=$(echo "$resp" | jq -r '.next // empty')
-          [ -z "$next" ] && break
-          page=$((page + 1))
+        # Registry tokens (auth.docker.io) only last ~60 s: renewed every 45 s.
+        TOKEN=""
+        TOKEN_AT=-1000
+        refresh_token() {
+          if [ $((SECONDS - TOKEN_AT)) -ge 45 ]; then
+            TOKEN=$(curl -fsSL -u "${DH_USER}:${DH_TOKEN}" \
+              "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${REPO}:pull,push,delete" \
+              | jq -r '.token // .access_token // empty')
+            if [ -z "$TOKEN" ]; then
+              echo "::error::Impossible d'obtenir un token registry (pull,push,delete) pour ${REPO}."
+              exit 1
+            fi
+            TOKEN_AT=$SECONDS
+          fi
+        }
+
+        WORK=$(mktemp -d)
+        : > "$WORK/tags"; : > "$WORK/index"; : > "$WORK/children"
+
+        # 1. Full tag list BEFORE deleting anything: deleting while paging
+        #    shifts the remaining tags back by one page and skips some.
+        echo "== Inventaire des tags de ${REPO} =="
+        url="${HUB}/tags?page_size=100"
+        while [ -n "$url" ]; do
+          resp=$(curl -fsSL -H "Authorization: Bearer ${JWT}" "$url")
+          echo "$resp" | jq -r '.results[]?.name' >> "$WORK/tags"
+          url=$(echo "$resp" | jq -r '.next // empty')
         done
-        echo "== $deleted tag(s) supprimé(s) pour ${LOADER} =="
-        echo "### 🗑️ Reset: $deleted tag(s) supprimé(s) sur minecraftserv/${LOADER}" >> "$GITHUB_STEP_SUMMARY"
+        sed -i '/^$/d' "$WORK/tags"
+        n_tags=$(wc -l < "$WORK/tags")
+        echo "$n_tags tag(s) trouvé(s)"
+
+        # 2. Digest designated by each tag (index for multi-arch images),
+        #    then the manifests it references (platforms + attestations).
+        echo "== Résolution des digests =="
+        resolve_failed=0
+        while IFS= read -r tag; do
+          refresh_token
+          digest=$(curl -fsSI -H "Authorization: Bearer ${TOKEN}" -H "Accept: ${ACCEPT}" \
+            "${REG}/manifests/${tag}" | grep -i '^docker-content-digest:' | awk '{print $2}' | tr -d '\r' || true)
+          if [ -z "$digest" ]; then
+            echo "::warning::Digest introuvable pour le tag ${tag} (son image ne sera pas supprimée)."
+            resolve_failed=$((resolve_failed + 1))
+            continue
+          fi
+          echo "$digest" >> "$WORK/index"
+          curl -fsSL -H "Authorization: Bearer ${TOKEN}" -H "Accept: ${ACCEPT}" \
+            "${REG}/manifests/${digest}" | jq -r '.manifests[]?.digest' >> "$WORK/children" || true
+        done < "$WORK/tags"
+        sort -u "$WORK/index" -o "$WORK/index"
+        sort -u "$WORK/children" | grep -vxF -f "$WORK/index" > "$WORK/children.u" || true
+
+        # 3. Tags: a manifest can only be deleted once no tag points to it.
+        echo "== Suppression des tags =="
+        tags_ok=0; tags_failed=0
+        while IFS= read -r tag; do
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+            -H "Authorization: Bearer ${JWT}" "${HUB}/tags/${tag}/" || echo 000)
+          case "$code" in
+            2*|404) tags_ok=$((tags_ok + 1)) ;;
+            *) echo "::warning::Tag ${tag} non supprimé (HTTP ${code})."; tags_failed=$((tags_failed + 1)) ;;
+          esac
+        done < "$WORK/tags"
+
+        # 4. Manifests by digest: indexes first (which frees their
+        #    children), then platform manifests and attestations.
+        echo "== Suppression des images (manifests) =="
+        img_ok=0; img_bg=0; img_failed=0
+        delete_manifest() {
+          refresh_token
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+            -H "Authorization: Bearer ${TOKEN}" "${REG}/manifests/$1" || echo 000)
+          case "$code" in
+            200|202|204|404) img_ok=$((img_ok + 1)) ;;
+            # Documented: the deletion is retried by Docker Hub in the background.
+            500) img_bg=$((img_bg + 1)) ;;
+            *) echo "::warning::Manifest $1 non supprimé (HTTP ${code})."; img_failed=$((img_failed + 1)) ;;
+          esac
+        }
+        while IFS= read -r d; do [ -n "$d" ] && delete_manifest "$d"; done < "$WORK/index"
+        while IFS= read -r d; do [ -n "$d" ] && delete_manifest "$d"; done < "$WORK/children.u"
+
+        summary="Reset ${REPO} : ${tags_ok}/${n_tags} tag(s) et ${img_ok} manifest(s) supprimé(s)"
+        [ "$img_bg" -gt 0 ] && summary="${summary}, ${img_bg} suppression(s) poursuivie(s) en arrière-plan par Docker Hub"
+        echo "== ${summary} =="
+        echo "### 🗑️ ${summary}" >> "$GITHUB_STEP_SUMMARY"
+
+        if [ "$tags_failed" -gt 0 ] || [ "$img_failed" -gt 0 ] || [ "$resolve_failed" -gt 0 ]; then
+          echo "::error::Reset incomplet : ${tags_failed} tag(s), ${img_failed} manifest(s) et ${resolve_failed} digest(s) en échec."
+          echo "### ❌ Reset incomplet : ${tags_failed} tag(s), ${img_failed} manifest(s), ${resolve_failed} digest(s) en échec" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
