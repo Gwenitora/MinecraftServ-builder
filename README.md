@@ -2,9 +2,10 @@
 
 Ready-to-use Docker images to host a Minecraft server with any loader:
 **vanilla, bukkit, spigot, paper, forge, neoforge, fabric, quilt**, plus the
-**velocity** proxy. Every version officially published by each project is
-available (releases, snapshots and pre-releases), for `linux/amd64` and
-`linux/arm64`, and the images are refreshed automatically every day.
+**velocity** proxy and **horizon** (Minecraft rewritten in Rust). Every
+version officially published by each project is available (releases,
+snapshots and pre-releases), for `linux/amd64` and `linux/arm64` (Horizon:
+`linux/amd64` only), and the images are refreshed automatically every day.
 
 > ✅ **The Mojang EULA is accepted automatically** (`ACCEPT_EULA=true` by
 > default). By using these images you accept the official EULA:
@@ -24,6 +25,7 @@ available (releases, snapshots and pre-releases), for `linux/amd64` and
 | Fabric | Mods (lightweight) | [minecraftserv/fabric](https://hub.docker.com/r/minecraftserv/fabric) | [README](docker/fabric/README.md) | <https://fabricmc.net/use/server/> |
 | Quilt | Mods (Fabric fork) | [minecraftserv/quilt](https://hub.docker.com/r/minecraftserv/quilt) | [README](docker/quilt/README.md) | <https://quiltmc.org/en/install/server/> |
 | Velocity | Proxy (network of servers) | [minecraftserv/velocity](https://hub.docker.com/r/minecraftserv/velocity) | [README](docker/velocity/README.md) | <https://papermc.io/software/velocity> |
+| Horizon | Minecraft 26.3 rewritten in Rust (no Java) | [minecraftserv/horizon](https://hub.docker.com/r/minecraftserv/horizon) | [README](docker/horizon/README.md) | <https://playhorizon.dev> |
 
 ## Quick start
 
@@ -56,6 +58,10 @@ All server data (world, configuration, logs, plugins, mods) lives in `/app`.
 On first start the image copies the server files into `/app`. When the image
 is updated to another version, the server files are refreshed and your own
 files (world, configuration, plugins, mods) are kept.
+
+Horizon works differently (game files prepared from your own copy of
+Minecraft, its own `HORIZON_*` variables): see its
+[README](docker/horizon/README.md).
 
 ### Environment variables
 
@@ -117,6 +123,8 @@ Rules:
   suffix only exists as `_latest`.
 - Velocity is not tied to a Minecraft version: see its
   [README](docker/velocity/README.md) for its own tags.
+- Horizon targets a single Minecraft version (26.3): its builds are tagged
+  `26.3_<date>-<commit>`, see its [README](docker/horizon/README.md).
 
 ### Channels
 
@@ -133,9 +141,11 @@ Rules:
 | before 1.12 | 8 |
 | 1.12 to 1.16.5 | 11 |
 | 1.17 to 1.20.4 | 17 |
-| 1.20.5 and newer (including 26.x) | 21 |
+| 1.20.5 to 25.x | 21 |
+| 26.x and newer | 25 |
 | Forge before 1.13 | 8 (old launcher) |
 | Velocity | 21 |
+| Horizon | none (native program) |
 
 ### Why are there untagged images on Docker Hub?
 
@@ -167,6 +177,7 @@ Configuration references:
 - Bukkit (`bukkit.yml`): <https://bukkit.fandom.com/wiki/Bukkit.yml>
 - Velocity (`velocity.toml`): <https://docs.papermc.io/velocity/configuration>
 - Forge / NeoForge / Fabric / Quilt: each mod documents its own file in `config/`.
+- Horizon (`server.toml`): <https://playhorizon.dev/docs/api/server-reference>
 
 ## How the images are built
 
@@ -179,6 +190,7 @@ may start scheduled runs a few minutes late):
 |--------|-----|-------------------------|
 | vanilla | 00:00 | 01:00 / 02:00 |
 | velocity | 01:00 | 02:00 / 03:00 |
+| horizon | 02:00 | 03:00 / 04:00 |
 | bukkit | 03:00 | 04:00 / 05:00 |
 | spigot | 06:00 | 07:00 / 08:00 |
 | paper | 09:00 | 10:00 / 11:00 |
@@ -274,7 +286,7 @@ on Docker Hub. It cannot be undone.
    tags and by `reset`).
 3. In this GitHub repository: **Settings -> Secrets and variables -> Actions**,
    add `DOCKERHUB_USERNAME` (`minecraftserv`) and `DOCKERHUB_TOKEN`.
-4. Create the 9 **public** repositories `minecraftserv/<loader>` (otherwise
+4. Create the 10 **public** repositories `minecraftserv/<loader>` (otherwise
    anonymous `docker pull` fails).
 
 ## Repository layout
@@ -282,6 +294,7 @@ on Docker Hub. It cannot be undone.
 ```
 docker/<loader>/Dockerfile          # one image per loader
 docker/<loader>/README.md           # documentation of that image
+docker/horizon/start.sh             # Horizon entrypoint (native server, no Java)
 entrypoint/entrypoint.sh            # shared entrypoint: fills /app, writes the EULA, starts run.sh
 scripts/resolve_versions.py         # reads the loader APIs, computes tags, builds and tag fixes
 .github/actions/resolve-versions/   # reads Docker Hub and computes the build matrix of a loader
@@ -305,5 +318,8 @@ scripts/resolve_versions.py         # reads the loader APIs, computes tags, buil
   redistributed): their builds are much slower.
 - **Quilt** has no ready-made server jar: the official installer runs at
   build time.
+- **Horizon** is `linux/amd64` only (no prebuilt server for ARM), only ships
+  Nightly builds, and needs game files prepared from your own copy of
+  Minecraft (the image contains none).
 - The snapshot-to-branch matching relies on version names and release dates:
   check the exact tag on Docker Hub if a project changes its naming scheme.
