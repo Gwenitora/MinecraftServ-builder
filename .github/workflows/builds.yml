@@ -68,7 +68,7 @@ jobs:
       - name: Déclencher les workflows sélectionnés
         run: |
           set -euo pipefail
-          LOADERS="vanilla bukkit spigot paper forge neoforge fabric quilt velocity"
+          LOADERS="vanilla bukkit spigot paper forge neoforge fabric quilt velocity horizon"
           TRIGGERED=""
           for loader in $LOADERS; do
             selected=false
