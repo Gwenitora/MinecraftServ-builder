@@ -106,6 +106,8 @@ runs:
             8) java_build=${BASE}:8-jdk-jammy; java_runtime=${BASE}:8-jre-jammy ;;
             11) java_build=${BASE}:11-jdk-jammy; java_runtime=${BASE}:11-jre-jammy ;;
             17) java_build=${BASE}:17-jdk-jammy; java_runtime=${BASE}:17-jre-jammy ;;
+            # Minecraft 26.x: BuildTools requires Java 25 or 26.
+            25) java_build=${BASE}:25-jdk-jammy; java_runtime=${BASE}:25-jre-jammy ;;
             *) java_build=${BASE}:21-jdk-jammy; java_runtime=${BASE}:21-jre-jammy ;;
           esac
 

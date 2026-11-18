@@ -119,7 +119,14 @@ def java_for_mc(mc_version):
         return "21"
     major = nums[0]
     minor = nums[1] if len(nums) > 1 else 0
-    # new calendar scheme (>= 20.x, not "1.x") -> Java 21
+    # new calendar scheme (>= 20.x, not "1.x"):
+    # 26.x and later -> Java 25. BuildTools refuses to build them with Java 21
+    # ("requires Java versions between [Java 25, Java 26]", javaVersions
+    # [69, 70] in hub.spigotmc.org/versions/26.1.json), and a server built
+    # with Java 25 also needs a Java 25 runtime.
+    if major >= 26:
+        return "25"
+    # earlier calendar versions -> Java 21
     if major >= 20 and major != 1:
         return "21"
     if major == 1:
