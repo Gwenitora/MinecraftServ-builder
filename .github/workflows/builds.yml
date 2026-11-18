@@ -34,6 +34,9 @@ on:
       velocity:
         type: boolean
         default: false
+      horizon:
+        type: boolean
+        default: false
       mode:
         description: "Mode transmis à chaque workflow déclenché"
         type: choice
@@ -82,6 +85,7 @@ jobs:
               fabric)   [ "${{ inputs.fabric }}" = "true" ] && selected=true ;;
               quilt)    [ "${{ inputs.quilt }}" = "true" ] && selected=true ;;
               velocity) [ "${{ inputs.velocity }}" = "true" ] && selected=true ;;
+              horizon)  [ "${{ inputs.horizon }}" = "true" ] && selected=true ;;
             esac
             if [ "$selected" = "true" ]; then
               echo "→ Déclenchement de ${loader}.yml (mode=${{ inputs.mode }})"
