@@ -9,7 +9,7 @@ description: >
 
 inputs:
   loader:
-    description: "vanilla | bukkit | spigot | paper | forge | neoforge | fabric | quilt | velocity"
+    description: "vanilla | bukkit | spigot | paper | forge | neoforge | fabric | quilt | velocity | horizon"
     required: true
   matrix_file:
     description: 'Chemin vers le fichier JSON {"include": [...]} (sortie de resolve-versions), lu directement sur disque pour éviter toute limite de taille des variables d''environnement/outputs GitHub Actions'
@@ -22,6 +22,10 @@ inputs:
     description: "true = continuer après l'échec d'une version (échec global du job à la fin) ; false = arrêt au premier échec"
     required: false
     default: "true"
+  platforms:
+    description: "Plateformes construites (docker buildx --platform), par ex. linux/amd64 seul pour un loader sans binaire ARM"
+    required: false
+    default: "linux/amd64,linux/arm64"
 
 runs:
   using: composite
@@ -54,6 +58,7 @@ runs:
         LOADER: ${{ inputs.loader }}
         MATRIX_FILE: ${{ inputs.matrix_file }}
         CONTINUE_ON_ERROR: ${{ inputs.continue_on_error }}
+        PLATFORMS: ${{ inputs.platforms }}
         DH_USER: ${{ inputs.dockerhub_username }}
         DH_TOKEN: ${{ inputs.dockerhub_token }}
       run: |
@@ -65,7 +70,7 @@ runs:
         # initial daily run).
         jq -c '.include[]' "$MATRIX_FILE" > /tmp/jobs.ndjson
         TOTAL=$(wc -l < /tmp/jobs.ndjson)
-        echo "== $TOTAL version(s) à construire pour $LOADER =="
+        echo "== $TOTAL version(s) à construire pour $LOADER ($PLATFORMS) =="
 
         # Java base images are pulled from the ECR Public mirror of the
         # official Docker images (public.ecr.aws/docker/library) rather than
@@ -82,7 +87,7 @@ runs:
             return
           fi
           docker buildx build \
-            --platform linux/amd64,linux/arm64 \
+            --platform "$PLATFORMS" \
             -f "docker/${LOADER}/Dockerfile" \
             "${tag_args[@]}" \
             "${build_arg_args[@]}" \

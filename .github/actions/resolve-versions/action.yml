@@ -1,12 +1,12 @@
 name: Resolve Minecraft versions
 description: >
   Interroge l'API officielle d'un loader (Mojang / PaperMC / Fabric / Quilt /
-  Forge / NeoForge / BuildTools) et calcule la matrix de build (versions +
-  tags Docker) via scripts/resolve_versions.py.
+  Forge / NeoForge / BuildTools / GitHub pour Horizon) et calcule la matrix de
+  build (versions + tags Docker) via scripts/resolve_versions.py.
 
 inputs:
   loader:
-    description: "vanilla | bukkit | spigot | paper | forge | neoforge | fabric | quilt | velocity"
+    description: "vanilla | bukkit | spigot | paper | forge | neoforge | fabric | quilt | velocity | horizon"
     required: true
   mode:
     description: "daily (images manquantes + correction des tags) | backfill (historique complet)"
@@ -57,6 +57,10 @@ runs:
     - name: Résoudre les versions disponibles
       id: build-matrix
       shell: bash
+      env:
+        # GitHub API calls of the resolver (Horizon releases): anonymous calls
+        # are limited to 60 per hour for all the runners sharing an IP.
+        GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
         ARGS="--loader ${{ inputs.loader }} --mode ${{ inputs.mode }} --state-file known_tags.txt"

@@ -25,6 +25,7 @@ Separator between version and loader in tags: "_" (e.g. 1.21.2_40.1.80)
 import argparse
 import datetime
 import json
+import os
 import re
 import sys
 import urllib.parse
@@ -44,6 +45,19 @@ def http_text(url):
     req = urllib.request.Request(url, headers=UA)
     with urllib.request.urlopen(req, timeout=30) as r:
         return r.read().decode("utf-8")
+
+
+def github_json(url):
+    """GitHub REST API call. Uses GITHUB_TOKEN when it is set (the workflow
+    passes github.token): anonymous calls are limited to 60 per hour and per
+    IP, and GitHub-hosted runners share their IPs."""
+    headers = dict(UA, Accept="application/vnd.github+json")
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode("utf-8"))
 
 
 def url_segment(s):
@@ -468,6 +482,82 @@ def provider_velocity():
     return out
 
 
+# ---------------------------------------------------------------------------
+# Horizon (playhorizon.dev): Minecraft Java Edition rewritten in Rust
+# ---------------------------------------------------------------------------
+
+HORIZON_REPO = "horizon-rust/horizon"
+# Prebuilt dedicated server: published for Linux x86_64 only (other systems
+# have to build it from source), hence an amd64-only image.
+HORIZON_SERVER_ASSET = "horizon-server-linux-x86_64.tar.gz"
+# Horizon reimplements a single Minecraft version, which its releases do not
+# state anywhere machine-readable: "Minecraft: Java Edition 26.3 rewritten in
+# Rust" (playhorizon.dev). Update this when Horizon moves to another version.
+HORIZON_MC_VERSION = "26.3"
+HORIZON_MAX_PAGES = 10
+
+
+def horizon_build_id(release):
+    """Identifier of a Horizon server build: "<date>-<commit>", read from the
+    release name ("Nightly 2026-11-03 · f42ef42"), else from its publication
+    date and target commit. The same build is published under a moving tag
+    ("nightly") and a dated one ("nightly-2026-11-03"), and a dated tag can be
+    re-created the same day for a newer commit: the commit tells them apart."""
+    m = re.search(r"(\d{4}-\d{2}-\d{2})\D+?([0-9a-f]{7,40})\b", release.get("name") or "")
+    if m:
+        return f"{m.group(1)}-{m.group(2)[:7]}"
+    commit = release.get("target_commitish") or ""
+    date = (release.get("published_at") or "")[:10]
+    if re.fullmatch(r"[0-9a-f]{40}", commit) and date:
+        return f"{date}-{commit[:7]}"
+    return None
+
+
+def provider_horizon():
+    """GitHub releases of Horizon that carry the Linux dedicated server
+    (today only the Nightly builds; the launcher releases have no server).
+    Every build is a "loader" of the single MC version HORIZON_MC_VERSION,
+    newest first. Horizon only ships Nightly builds, so they are all on the
+    "latest" channel. The image holds none of Minecraft's files: the game
+    files are prepared by the user from their own copy (see
+    docker/horizon/README.md)."""
+    builds = {}
+    for page in range(1, HORIZON_MAX_PAGES + 1):
+        releases = github_json(f"https://api.github.com/repos/{HORIZON_REPO}/releases?per_page=100&page={page}")
+        if not releases:
+            break
+        for r in releases:
+            if r.get("draft"):
+                continue
+            asset = next((a for a in r.get("assets", []) if a.get("name") == HORIZON_SERVER_ASSET), None)
+            if not asset:
+                continue
+            bid = horizon_build_id(r)
+            if bid is None:
+                continue
+            digest = asset.get("digest") or ""
+            build = {
+                "published_at": r.get("published_at") or "",
+                # a dated tag keeps its asset; the moving "nightly" tag does not
+                "moving": not re.search(r"\d", r.get("tag_name") or ""),
+                "build_args": {
+                    "SERVER_URL": asset["browser_download_url"],
+                    "SERVER_SHA256": digest[len("sha256:"):] if digest.startswith("sha256:") else "",
+                },
+            }
+            prev = builds.get(bid)
+            if prev is None or (prev["moving"] and not build["moving"]):
+                builds[bid] = build
+        if len(releases) < 100:
+            break
+    loaders = [{"id": bid, "channel": "latest", "build_args": b["build_args"]}
+               for bid, b in sorted(builds.items(), key=lambda kv: (kv[1]["published_at"], kv[0]), reverse=True)]
+    if not loaders:
+        return []
+    # "java" is not used by docker/horizon/Dockerfile (native program): it is
+    # only kept so every job has the same fields.
+    return [{"mc_version": HORIZON_MC_VERSION, "mc_channel": "latest", "java": "none", "loaders": loaders}]
+
 
 PROVIDERS = {
     "vanilla": provider_vanilla,
@@ -479,6 +569,7 @@ PROVIDERS = {
     "fabric": provider_fabric,
     "quilt": provider_quilt,
     "velocity": provider_velocity,
+    "horizon": provider_horizon,
 }
 
 
