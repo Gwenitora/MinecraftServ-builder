@@ -78,6 +78,47 @@ runs:
         # and every version re-resolves the base images for 2 architectures,
         # which made builds fail at random points.
         BASE="public.ecr.aws/docker/library/eclipse-temurin"
+        # Java versions provided by set_java_images, newest first. Keep in
+        # sync with AVAILABLE_JAVA in scripts/resolve_versions.py.
+        AVAILABLE_JAVA="25 21 17 11 8"
+
+        set_java_images() {
+          case "$java" in
+            8) java_build=${BASE}:8-jdk-jammy; java_runtime=${BASE}:8-jre-jammy ;;
+            11) java_build=${BASE}:11-jdk-jammy; java_runtime=${BASE}:11-jre-jammy ;;
+            17) java_build=${BASE}:17-jdk-jammy; java_runtime=${BASE}:17-jre-jammy ;;
+            # Minecraft 26.x: BuildTools requires Java 25 or 26.
+            25) java_build=${BASE}:25-jdk-jammy; java_runtime=${BASE}:25-jre-jammy ;;
+            *) java_build=${BASE}:21-jdk-jammy; java_runtime=${BASE}:21-jre-jammy ;;
+          esac
+        }
+
+        set_build_args() {
+          set_java_images
+          build_arg_args=(--build-arg "JAVA_IMAGE=${java_build}" --build-arg "JAVA_RUNTIME_IMAGE=${java_runtime}" --build-arg "MC_VERSION=${mc_version}" --build-arg "LOADER_VERSION=${loader_version}")
+          while IFS= read -r kv; do
+            build_arg_args+=(--build-arg "$kv")
+          done < <(echo "$job" | jq -r '.build_args // {} | to_entries[] | "\(.key)=\(.value)"')
+        }
+
+        # Safety net for the Java version chosen by resolve_versions.py: when
+        # BuildTools (bukkit/spigot) refuses to run, it states the range it
+        # accepts ("requires Java versions between [Java 8, Java 9], but you
+        # are using Java 11"). Prints the newest available Java inside that
+        # range, or nothing if the log has no such line or no image fits.
+        java_from_log() {
+          local range lo hi j
+          range=$(grep -oE 'requires Java versions between \[Java [0-9]+, Java [0-9]+\]' "$1" | head -n1 || true)
+          [ -n "$range" ] || return 0
+          lo=$(echo "$range" | grep -oE '[0-9]+' | sed -n 1p)
+          hi=$(echo "$range" | grep -oE '[0-9]+' | sed -n 2p)
+          for j in $AVAILABLE_JAVA; do
+            if [ "$j" -ge "$lo" ] && [ "$j" -le "$hi" ]; then
+              echo "$j"
+              return 0
+            fi
+          done
+        }
 
         build_one() {
           # Migration job (see apply_migration in resolve_versions.py): add
@@ -107,15 +148,6 @@ runs:
           retag_from=$(echo "$job" | jq -r '.retag_from // empty')
           marker_tag=$(echo "$job" | jq -r '.marker_tag // empty')
 
-          case "$java" in
-            8) java_build=${BASE}:8-jdk-jammy; java_runtime=${BASE}:8-jre-jammy ;;
-            11) java_build=${BASE}:11-jdk-jammy; java_runtime=${BASE}:11-jre-jammy ;;
-            17) java_build=${BASE}:17-jdk-jammy; java_runtime=${BASE}:17-jre-jammy ;;
-            # Minecraft 26.x: BuildTools requires Java 25 or 26.
-            25) java_build=${BASE}:25-jdk-jammy; java_runtime=${BASE}:25-jre-jammy ;;
-            *) java_build=${BASE}:21-jdk-jammy; java_runtime=${BASE}:21-jre-jammy ;;
-          esac
-
           tag_args=()
           while IFS= read -r t; do
             # Never publish the migration marker if an earlier retag failed:
@@ -127,23 +159,48 @@ runs:
             tag_args+=(-t "minecraftserv/${LOADER}:${t}")
           done < <(echo "$job" | jq -r '.tags[]')
 
-          build_arg_args=(--build-arg "JAVA_IMAGE=${java_build}" --build-arg "JAVA_RUNTIME_IMAGE=${java_runtime}" --build-arg "MC_VERSION=${mc_version}" --build-arg "LOADER_VERSION=${loader_version}")
-          while IFS= read -r kv; do
-            build_arg_args+=(--build-arg "$kv")
-          done < <(echo "$job" | jq -r '.build_args // {} | to_entries[] | "\(.key)=\(.value)"')
+          set_build_args
 
           tags_display=$(echo "$job" | jq -r '.tags | join(", ")')
           echo ""
           if [ -n "$retag_from" ]; then
             echo "[$i/$TOTAL] ${LOADER} ${mc_version} : ajout de tag(s) sur l'image existante ${retag_from} -> ${tags_display}"
           else
-            echo "[$i/$TOTAL] ${LOADER} ${mc_version} (loader ${loader_version}) -> ${tags_display}"
+            echo "[$i/$TOTAL] ${LOADER} ${mc_version} (loader ${loader_version}, Java ${java}) -> ${tags_display}"
           fi
 
-          if build_one || { echo "::warning::Échec de ${LOADER} ${mc_version}, nouvel essai dans 60 s"; sleep 60; build_one; }; then
+          # First attempt, logged to a file so a Java version refused by
+          # BuildTools can be read back from it.
+          build_log="/tmp/build-${i}.log"
+          success=0
+          if build_one 2>&1 | tee "$build_log"; then
+            success=1
+          else
+            retry_java=""
+            if [ -z "$retag_from" ]; then
+              retry_java=$(java_from_log "$build_log")
+            fi
+            if [ -n "$retry_java" ] && [ "$retry_java" != "$java" ]; then
+              # Retried at once with the Java version BuildTools asked for:
+              # nothing to wait for. The warning shows a version that
+              # resolve_versions.py should have picked by itself.
+              echo "::warning::${LOADER} ${mc_version} : BuildTools refuse Java ${java}, nouvel essai immédiat avec Java ${retry_java}."
+              java=$retry_java
+              set_build_args
+            else
+              echo "::warning::Échec de ${LOADER} ${mc_version}, nouvel essai dans 60 s"
+              sleep 60
+            fi
+            if build_one; then
+              success=1
+            fi
+          fi
+          rm -f "$build_log"
+
+          if [ "$success" = "1" ]; then
             ok=$((ok + 1))
           else
-            echo "::error::Échec du build de ${LOADER} ${mc_version} (loader ${loader_version}) après 2 essais."
+            echo "::error::Échec du build de ${LOADER} ${mc_version} (loader ${loader_version}, Java ${java}) après 2 essais."
             echo "--- espace disque au moment de l'échec ---"
             df -h / /var/lib/docker 2>/dev/null || true
             docker system df 2>/dev/null || true
