@@ -78,14 +78,21 @@ runs:
         # and every version re-resolves the base images for 2 architectures,
         # which made builds fail at random points.
         BASE="public.ecr.aws/docker/library/eclipse-temurin"
-        # Java versions provided by set_java_images, newest first. Keep in
-        # sync with AVAILABLE_JAVA in scripts/resolve_versions.py.
-        AVAILABLE_JAVA="25 21 17 11 8"
+        # Java versions provided by set_java_images, in order of preference:
+        # newest first, last-resort versions (LAST_RESORT_JAVA in
+        # scripts/resolve_versions.py) at the end. Keep both lists in sync.
+        AVAILABLE_JAVA="25 21 17 11 8 16"
 
         set_java_images() {
           case "$java" in
             8) java_build=${BASE}:8-jdk-jammy; java_runtime=${BASE}:8-jre-jammy ;;
             11) java_build=${BASE}:11-jdk-jammy; java_runtime=${BASE}:11-jre-jammy ;;
+            # Minecraft 1.17: BuildTools accepts Java 16 only. Temurin 16 has
+            # no "jammy" image and no JRE: build with the "focal" JDK (frozen
+            # since 2022, pulled from Docker Hub, whose tags are certain to
+            # exist, with the account logged in above) and run on Java 17,
+            # which 1.17 supports.
+            16) java_build=docker.io/library/eclipse-temurin:16-jdk-focal; java_runtime=${BASE}:17-jre-jammy ;;
             17) java_build=${BASE}:17-jdk-jammy; java_runtime=${BASE}:17-jre-jammy ;;
             # Minecraft 26.x: BuildTools requires Java 25 or 26.
             25) java_build=${BASE}:25-jdk-jammy; java_runtime=${BASE}:25-jre-jammy ;;

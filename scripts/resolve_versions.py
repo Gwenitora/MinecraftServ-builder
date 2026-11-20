@@ -164,7 +164,11 @@ def java_for_mc(mc_version):
 
 # Java versions that .github/actions/build-loader/action.yml can provide as
 # build/runtime images. Keep in sync with its "case" and AVAILABLE_JAVA.
-AVAILABLE_JAVA = (8, 11, 17, 21, 25)
+AVAILABLE_JAVA = (8, 11, 16, 17, 21, 25)
+# Java versions only picked when nothing else fits the BuildTools range:
+# Java 16 (needed by 1.17, which accepts Java 16 only) has no "jammy" image
+# and no JRE; its "16-jdk-focal" build image has been frozen since 2022.
+LAST_RESORT_JAVA = frozenset({16})
 # "javaVersions" in the BuildTools metadata are class file versions:
 # Java N = class file version - 44 (52 -> Java 8, 60 -> Java 16).
 CLASS_FILE_JAVA_OFFSET = 44
@@ -190,12 +194,14 @@ def buildtools_java_range(rev):
 
 def pick_java_in_range(lo, hi, preferred=None):
     """Java version among AVAILABLE_JAVA within [lo, hi]: the preferred one
-    when it fits, else the newest one that fits. None when no available image
-    fits (e.g. 1.17, which only accepts Java 16)."""
+    when it fits, else the newest one that fits, LAST_RESORT_JAVA versions
+    only when nothing else does (e.g. 1.17, which only accepts Java 16).
+    None when no available image fits."""
     if preferred in AVAILABLE_JAVA and lo <= preferred <= hi:
         return preferred
     fits = [j for j in AVAILABLE_JAVA if lo <= j <= hi]
-    return max(fits) if fits else None
+    regular = [j for j in fits if j not in LAST_RESORT_JAVA]
+    return max(regular or fits) if fits else None
 
 
 def buildtools_java(rev):
