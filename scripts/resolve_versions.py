@@ -23,6 +23,7 @@ Modes:
 Separator between version and loader in tags: "_" (e.g. 1.21.2_40.1.80)
 """
 import argparse
+import concurrent.futures
 import datetime
 import json
 import os
@@ -161,6 +162,67 @@ def java_for_mc(mc_version):
     return "21"
 
 
+# Java versions that .github/actions/build-loader/action.yml can provide as
+# build/runtime images. Keep in sync with its "case" and AVAILABLE_JAVA.
+AVAILABLE_JAVA = (8, 11, 16, 17, 21, 25)
+# Java versions only picked when nothing else fits the BuildTools range:
+# Java 16 (needed by 1.17, which accepts Java 16 only) has no "jammy" image
+# and no JRE; its "16-jdk-focal" build image has been frozen since 2022.
+LAST_RESORT_JAVA = frozenset({16})
+# "javaVersions" in the BuildTools metadata are class file versions:
+# Java N = class file version - 44 (52 -> Java 8, 60 -> Java 16).
+CLASS_FILE_JAVA_OFFSET = 44
+# Range BuildTools applies when a revision JSON has no "javaVersions" field
+# (old revisions): Java 7 to Java 8.
+BUILDTOOLS_DEFAULT_JAVA_RANGE = (7, 8)
+
+
+def buildtools_java_range(rev):
+    """Java range (min, max) accepted by BuildTools for a revision, read from
+    hub.spigotmc.org/versions/<rev>.json (e.g. "javaVersions": [52, 53] ->
+    (8, 9)). Returns None if the metadata cannot be read."""
+    try:
+        data = http_json(f"https://hub.spigotmc.org/versions/{url_segment(rev)}.json")
+    except Exception as exc:
+        print(f"warning: cannot read BuildTools metadata for {rev}: {exc}", file=sys.stderr)
+        return None
+    rng = data.get("javaVersions")
+    if not isinstance(rng, list) or len(rng) != 2:
+        return BUILDTOOLS_DEFAULT_JAVA_RANGE
+    return rng[0] - CLASS_FILE_JAVA_OFFSET, rng[1] - CLASS_FILE_JAVA_OFFSET
+
+
+def pick_java_in_range(lo, hi, preferred=None):
+    """Java version among AVAILABLE_JAVA within [lo, hi]: the preferred one
+    when it fits, else the newest one that fits, LAST_RESORT_JAVA versions
+    only when nothing else does (e.g. 1.17, which only accepts Java 16).
+    None when no available image fits."""
+    if preferred in AVAILABLE_JAVA and lo <= preferred <= hi:
+        return preferred
+    fits = [j for j in AVAILABLE_JAVA if lo <= j <= hi]
+    regular = [j for j in fits if j not in LAST_RESORT_JAVA]
+    return max(regular or fits) if fits else None
+
+
+def buildtools_java(rev):
+    """Java version used to build a Bukkit/Spigot revision. BuildTools refuses
+    to run outside the range published for the revision ("requires Java
+    versions between [Java 8, Java 9], but you are using Java 11"), so that
+    range wins over the java_for_mc() heuristic. The heuristic is kept when it
+    fits the range (no change for versions that already build), when the
+    range cannot be read, or when no available image fits it."""
+    heuristic = java_for_mc(rev)
+    rng = buildtools_java_range(rev)
+    if rng is None:
+        return heuristic
+    picked = pick_java_in_range(rng[0], rng[1], int(heuristic))
+    if picked is None:
+        print(f"warning: no available Java image for {rev} "
+              f"(BuildTools requires Java {rng[0]} to {rng[1]})", file=sys.stderr)
+        return heuristic
+    return str(picked)
+
+
 def version_sort_key(v):
     """Approximate sort key based on the numbers found in the version
     string (e.g. '1.21.2' -> (1, 21, 2, 0, 0, 0)). Used as a fallback when
@@ -258,17 +320,20 @@ def provider_bukkit():
 
 
 def _provider_buildtools(exclude=frozenset()):
+    versions = [mc for mc in _spigot_bukkit_versions() if mc not in exclude]
+    # One metadata request per revision (Java range accepted by BuildTools),
+    # run in parallel to keep the resolver fast.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        javas = dict(zip(versions, pool.map(buildtools_java, versions)))
     out = []
-    for mc in _spigot_bukkit_versions():
-        if mc in exclude:
-            continue
+    for mc in versions:
         ch = "latest"
         if re.search(r"(pre|rc)", mc):
             ch = "snapshot"
         out.append({
             "mc_version": mc,
             "mc_channel": ch,
-            "java": java_for_mc(mc),
+            "java": javas[mc],
             "loaders": [{"id": mc, "channel": ch, "build_args": {"BUILDTOOLS_REV": mc}}],
         })
     return out
