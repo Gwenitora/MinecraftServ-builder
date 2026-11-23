@@ -308,7 +308,13 @@ def _spigot_bukkit_versions():
 # 1.8.8); only "1.8" (legacy build) and "1.8.3" (build "422") have a
 # different, broken pin. CraftBukkit (bukkit), which does not depend on
 # bungeecord-chat, is not affected.
-SPIGOT_BROKEN_VERSIONS = {"1.8", "1.8.3"}
+#
+# "1.9", "1.9.2", "1.11" and "1.12" fail the same way: once BuildTools runs
+# with an accepted Java version (Java 8), Maven cannot resolve their
+# net.md-5:bungeecord-chat:<version>-SNAPSHOT dependency ("Could not find
+# artifact ... in sonatype-nexus-snapshots", seen in the spigot run of
+# 2026-11-20), purged from oss.sonatype.org like the 1.8 one.
+SPIGOT_BROKEN_VERSIONS = {"1.8", "1.8.3", "1.9", "1.9.2", "1.11", "1.12"}
 
 
 def provider_spigot():
